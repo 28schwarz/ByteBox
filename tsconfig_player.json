@@ -1,0 +1,4 @@
+{
+	"extends": "./tsconfig.json",
+	"files": [ "player/main.ts" ]
+}
