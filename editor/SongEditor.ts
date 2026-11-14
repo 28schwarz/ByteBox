@@ -1192,7 +1192,9 @@ export class SongEditor {
 
     // The formula of a bytebeat instrument is edited in a prompt. The panel shows the formula and the sample that it compiled into.
     private readonly _bytebeatPreviewCanvas: HTMLCanvasElement = canvas({ width: 128, height: 40, style: `position: static; width: 100%; height: 40px; box-sizing: border-box; border: 2px solid ${ColorConfig.uiWidgetBackground}; cursor: pointer; image-rendering: pixelated;`, title: "Edit the bytebeat formula", onclick: () => this._openPrompt("bytebeatSettings") });
-    private readonly _bytebeatFormulaLabel: HTMLDivElement = div({ style: `font-family: monospace; font-size: 85%; color: ${ColorConfig.secondaryText}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; margin-bottom: 4px;` });
+    // The formula is shown on one line that is cut short to fit. Text that can't wrap would normally make the whole settings
+    // panel as wide as the formula is long, so the label claims no width of its own ("width: 0") and then fills the panel.
+    private readonly _bytebeatFormulaLabel: HTMLDivElement = div({ style: `width: 0; min-width: 100%; box-sizing: border-box; font-family: monospace; font-size: 85%; color: ${ColorConfig.secondaryText}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; margin-bottom: 4px;` });
     private readonly _bytebeatEditButton: HTMLButtonElement = button({ style: "flex-grow: 1; margin-left: 0.4em; height: 1.5em; padding: 0 0.5em;", onclick: () => this._openPrompt("bytebeatSettings") }, "Edit Formula");
     private readonly _bytebeatRow: HTMLDivElement = div({ style: "margin-top: 4px; margin-bottom: 4px;" },
         div({ class: "selectRow" }, span({ class: "tip", onclick: () => this._openPrompt("bytebeat") }, "Bytebeat:"), this._bytebeatEditButton),
