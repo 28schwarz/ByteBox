@@ -119,6 +119,18 @@ differences from other bytebeat players follow from that: text only acts as a
 list of numbers (there is no joining text together with `+`), and `random()`
 always produces the same sequence so that a song sounds the same every time.
 
+## Moving your settings between sites
+
+Preferences, themes, copied instruments and recovered songs are saved in the
+browser's local storage, which browsers keep separate for every website. A copy
+of the editor hosted at a new address therefore starts out with none of the data
+from another address, and it has no way of reading that data directly.
+
+`Preferences > Transfer Browser Data...` moves it by hand instead: export a file
+on one site and import it on the other. For a site that doesn't have that menu,
+the prompt provides a short snippet to paste into that site's browser console,
+which saves the same kind of file.
+
 ## Dependencies
 
 Most of the dependencies are listed in [package.json](package.json), although

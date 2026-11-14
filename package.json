@@ -34,7 +34,7 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/slarmoo/slarmoosbox.git"
+		"url": "git+https://github.com/28schwarz/ByteBox.git"
 	},
 	"devDependencies": {
 		"@electron/packager": "^20.3.0",

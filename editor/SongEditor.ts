@@ -9,6 +9,7 @@ import { ChannelSettingsPrompt } from "./ChannelSettingsPrompt";
 import { ColorConfig, ChannelColors } from "./ColorConfig";
 import { CustomChipPrompt } from "./CustomChipPrompt";
 import { BytebeatPrompt, drawBytebeatWaveform } from "./BytebeatPrompt";
+import { BrowserDataPrompt } from "./BrowserDataPrompt";
 import { BytebeatRender } from "../synth/Bytebeat";
 import { CustomFilterPrompt } from "./CustomFilterPrompt";
 import { InstrumentExportPrompt } from "./InstrumentExportPrompt";
@@ -819,6 +820,7 @@ export class SongEditor {
             option({ value: "displayBrowserUrl" }, "Enable Song Data in URL"),
             option({ value: "closePromptByClickoff" }, "Close Prompts on Click Off"),
             option({ value: "recordingSetup" }, "Note Recording..."),
+            option({ value: "browserData" }, "Transfer Browser Data..."),
         ),
         optgroup({ label: "Appearance" },
         option({ value: "showFifth" }, 'Highlight "Fifth" Note'),
@@ -2248,6 +2250,9 @@ export class SongEditor {
                 case "bytebeatSettings":
                     this.prompt = new BytebeatPrompt(this.doc);
                     break;
+                case "browserData":
+                    this.prompt = new BrowserDataPrompt(this.doc);
+                    break;
                 case "customEQFilterSettings":
                     this.prompt = new CustomFilterPrompt(this.doc, this, false);
                     break;
@@ -2457,6 +2462,7 @@ export class SongEditor {
             (prefs.displayBrowserUrl ? textOnIcon : textOffIcon) + "Enable Song Data in URL",
             (prefs.closePromptByClickoff ? textOnIcon : textOffIcon) + "Close Prompts on Click Off",
             textSpacingIcon + "Note Recording...",
+            textSpacingIcon + "Transfer Browser Data...",
             textSpacingIcon + "Appearance",
             (prefs.showFifth ? textOnIcon : textOffIcon) + 'Highlight "Fifth" Note',
             (prefs.notesFlashWhenPlayed ? textOnIcon : textOffIcon) + "Notes Flash When Played",
@@ -5646,6 +5652,9 @@ export class SongEditor {
                 break;
             case "recordingSetup":
                 this._openPrompt("recordingSetup");
+                break;
+            case "browserData":
+                this._openPrompt("browserData");
                 break;
             case "showOscilloscope":
                 this.doc.prefs.showOscilloscope = !this.doc.prefs.showOscilloscope;
