@@ -8,6 +8,7 @@ import { SongDocument } from "./SongDocument";
 import { ColorConfig } from "./ColorConfig";
 import { Slider } from "./HTMLWrapper";
 import { SelectiveInstrumentSettings } from "./Preferences";
+import { BytebeatExample, bytebeatExamples } from "./BytebeatExamples";
 
 export function patternsContainSameInstruments(pattern1Instruments: number[], pattern2Instruments: number[]): boolean {
     const pattern2Has1Instruments: boolean = pattern1Instruments.every(instrument => pattern2Instruments.indexOf(instrument) != -1);
@@ -612,6 +613,38 @@ export class ChangeCustomWave extends Change {
     }
 }
 
+export class ChangeBytebeat extends Change {
+    constructor(doc: SongDocument, code: string, mode: number, tuning: number, sampleRate: number, length: number, rootKey: number) {
+        super();
+        const instrument: Instrument = doc.song.channels[doc.channel].instruments[doc.getCurrentInstrument()];
+        const oldCode: string = instrument.bytebeatCode;
+        const oldMode: number = instrument.bytebeatMode;
+        const oldTuning: number = instrument.bytebeatTuning;
+        const oldSampleRate: number = instrument.bytebeatSampleRate;
+        const oldLength: number = instrument.bytebeatLength;
+        const oldRootKey: number = instrument.bytebeatRootKey;
+        // This also makes sure that every setting is in range.
+        instrument.setBytebeat(code, mode, tuning, sampleRate, length, rootKey);
+        if (oldCode != instrument.bytebeatCode || oldMode != instrument.bytebeatMode || oldTuning != instrument.bytebeatTuning || oldSampleRate != instrument.bytebeatSampleRate || oldLength != instrument.bytebeatLength || oldRootKey != instrument.bytebeatRootKey) {
+            if (oldLength != instrument.bytebeatLength) {
+                // The loop controls are measured in samples, so they need to follow along when the sample changes length.
+                const waveLength: number = instrument.getLoopableWaveLength() - 1;
+                if (instrument.isUsingAdvancedLoopControls && instrument.chipWaveLoopEnd < oldLength) {
+                    instrument.chipWaveLoopEnd = Math.max(1, Math.min(waveLength, instrument.chipWaveLoopEnd));
+                } else {
+                    // The loop used to reach the end of the sample, so it still should.
+                    instrument.chipWaveLoopEnd = waveLength;
+                }
+                instrument.chipWaveLoopStart = Math.max(0, Math.min(instrument.chipWaveLoopEnd - 1, instrument.chipWaveLoopStart));
+                instrument.chipWaveStartOffset = Math.max(0, Math.min(waveLength - 1, instrument.chipWaveStartOffset));
+            }
+            instrument.preset = instrument.type;
+            doc.notifier.changed();
+            this._didSomething();
+        }
+    }
+}
+
 export class ChangeCustomAlgorythmorFeedback extends Change {
     constructor(doc: SongDocument, newArray: number[][], carry: number, mode: string) {
         super();
@@ -685,7 +718,13 @@ export class ChangePreset extends Change {
             const preset: Preset | null = preset1 ?? EditorConfig.valueToPreset(newValue);
             if (preset != null) {
                 if (preset.customType != undefined) {
+                    const oldType: InstrumentType = instrument.type;
                     instrument.type = preset.customType;
+                    if (oldType != instrument.type && (oldType == InstrumentType.bytebeat || instrument.type == InstrumentType.bytebeat)) {
+                        // The loop controls count samples of the wave being played. A bytebeat instrument plays
+                        // a different wave than every other type, so loop points don't carry over to or from it.
+                        instrument.resetLoopControls();
+                    }
                     if (!Config.instrumentTypeHasSpecialInterval[instrument.type] && Config.chords[instrument.chord].customInterval) {
                         instrument.chord = 0;
                     }
@@ -1020,7 +1059,10 @@ export class ChangeRandomGeneratedInstrument extends Change {
                 { item: InstrumentType.fm, weight: 2 },
                 { item: InstrumentType.fm6op, weight: 2 },
             ]);
+            // Loop points for a bytebeat sample don't apply to anything else. (See ChangePreset.)
+            const leavingBytebeat: boolean = instrument.type == InstrumentType.bytebeat && type != InstrumentType.bytebeat;
             instrument.preset = instrument.type = type;
+            if (leavingBytebeat) instrument.resetLoopControls();
 
             if (selectiveRandom.fade) {
                 instrument.fadeIn = (Math.random() < 0.5) ? 0 : selectCurvedDistribution(0, Config.fadeInRange - 1, 0, 2);
@@ -1784,6 +1826,12 @@ export class ChangeRandomGeneratedInstrument extends Change {
 
                     instrument.customChipWave = randomGeneratedArray;
                     instrument.customChipWaveIntegral = randomGeneratedArrayIntegral;
+                } break;
+                case InstrumentType.bytebeat: {
+                    // Writing a random formula that also sounds good is a tall order, so pick one of the examples.
+                    const example: BytebeatExample = bytebeatExamples[(Math.random() * bytebeatExamples.length) | 0];
+                    instrument.setBytebeat(example.code, example.mode, example.tuning, example.sampleRate, example.length, Config.bytebeatRootKeyDefault);
+                    instrument.resetLoopControls();
                 } break;
                // case InstrumentType.noise: {
                 //     instrument.chipNoise = selectWeightedRandom([
@@ -3737,6 +3785,15 @@ export class ChangePasteInstrumentEditSelective extends ChangeGroup {
                         instrument.customChipWave = instrumentPaste.customChipWave.slice();
                         instrument.customChipWaveIntegral = instrumentPaste.customChipWaveIntegral.slice();
                         break;
+                    case InstrumentType.bytebeat:
+                        instrument.setBytebeat(instrumentPaste.bytebeatCode, instrumentPaste.bytebeatMode, instrumentPaste.bytebeatTuning, instrumentPaste.bytebeatSampleRate, instrumentPaste.bytebeatLength, instrumentPaste.bytebeatRootKey);
+                        instrument.isUsingAdvancedLoopControls = instrumentPaste.isUsingAdvancedLoopControls;
+                        instrument.chipWaveLoopStart = instrumentPaste.chipWaveLoopStart;
+                        instrument.chipWaveLoopEnd = instrumentPaste.chipWaveLoopEnd;
+                        instrument.chipWaveLoopMode = instrumentPaste.chipWaveLoopMode;
+                        instrument.chipWavePlayBackwards = instrumentPaste.chipWavePlayBackwards;
+                        instrument.chipWaveStartOffset = instrumentPaste.chipWaveStartOffset;
+                        break;
                     case InstrumentType.fm:
                         instrument.algorithm = instrumentPaste.algorithm;
                         instrument.feedbackType = instrumentPaste.feedbackType;
@@ -5501,7 +5558,7 @@ export class ChangeChipWave extends Change {
             if (instrument.isUsingAdvancedLoopControls != newValue) {
                 instrument.isUsingAdvancedLoopControls = newValue;
                 instrument.chipWaveLoopStart = 0;
-                instrument.chipWaveLoopEnd = Config.rawRawChipWaves[instrument.chipWave].samples.length - 1;
+                instrument.chipWaveLoopEnd = instrument.getLoopableWaveLength() - 1;
                 instrument.chipWaveLoopMode = 0;
                 instrument.chipWavePlayBackwards = false;
                 instrument.chipWaveStartOffset = 0;

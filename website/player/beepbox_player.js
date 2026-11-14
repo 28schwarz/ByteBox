@@ -32,7 +32,7 @@ var beepbox = (function (exports) {
         });
     };
     var _a$1;
-    const TypePresets = ["chip", "FM", "noise", "spectrum", "drumset", "harmonics", "pulse width", "picked string", "supersaw", "chip (custom)", "mod", "FM (6-op)"];
+    const TypePresets = ["chip", "FM", "noise", "spectrum", "drumset", "harmonics", "pulse width", "picked string", "supersaw", "chip (custom)", "mod", "FM (6-op)", "chip (bytebeat)"];
     class SampleLoadingState {
         constructor() {
             this.statusTable = {};
@@ -519,9 +519,22 @@ var beepbox = (function (exports) {
         { name: "÷12", stepsPerBeat: 12, roundUpThresholds: null },
         { name: "freehand", stepsPerBeat: 24, roundUpThresholds: null },
     ]);
-    Config.instrumentTypeNames = ["chip", "FM", "noise", "spectrum", "drumset", "harmonics", "PWM", "Picked String", "supersaw", "custom chip", "mod", "FM6op"];
-    Config.instrumentTypeHasSpecialInterval = [true, true, false, false, false, true, false, false, false, false, false];
+    Config.instrumentTypeNames = ["chip", "FM", "noise", "spectrum", "drumset", "harmonics", "PWM", "Picked String", "supersaw", "custom chip", "mod", "FM6op", "bytebeat"];
+    Config.instrumentTypeHasSpecialInterval = [true, true, false, false, false, true, false, false, false, false, false, false, false];
     Config.chipBaseExpression = 0.03375;
+    Config.bytebeatBaseExpression = 0.03375;
+    Config.bytebeatModeNames = ["bytebeat", "signed bytebeat", "floatbeat"];
+    Config.bytebeatTuningNames = ["sample", "single cycle"];
+    Config.bytebeatDefaultCode = "t*(42&t>>10)";
+    Config.bytebeatCodeMaxLength = 8192;
+    Config.bytebeatSampleRateMin = 100;
+    Config.bytebeatSampleRateMax = 192000;
+    Config.bytebeatSampleRateDefault = 8000;
+    Config.bytebeatLengthMin = 2;
+    Config.bytebeatLengthMax = 1048576;
+    Config.bytebeatLengthDefault = 65536;
+    Config.bytebeatRootKeyMax = 127;
+    Config.bytebeatRootKeyDefault = 60;
     Config.fmBaseExpression = 0.03;
     Config.noiseBaseExpression = 0.19;
     Config.spectrumBaseExpression = 0.3;
@@ -1132,7 +1145,7 @@ var beepbox = (function (exports) {
         { name: "noteVolume", computeIndex: 0, displayName: "note volume", perNote: true, interleave: false, isFilter: false, maxCount: 1, effect: null, compatibleInstruments: null },
         { name: "pulseWidth", computeIndex: 2, displayName: "pulse width", perNote: true, interleave: false, isFilter: false, maxCount: 1, effect: null, compatibleInstruments: [6, 8] },
         { name: "stringSustain", computeIndex: 3, displayName: "sustain", perNote: true, interleave: false, isFilter: false, maxCount: 1, effect: null, compatibleInstruments: [7] },
-        { name: "unison", computeIndex: 4, displayName: "unison", perNote: true, interleave: false, isFilter: false, maxCount: 1, effect: null, compatibleInstruments: [0, 5, 7, 9, 6, 2, 3, 4, 1, 11, 8] },
+        { name: "unison", computeIndex: 4, displayName: "unison", perNote: true, interleave: false, isFilter: false, maxCount: 1, effect: null, compatibleInstruments: [0, 5, 7, 9, 6, 2, 3, 4, 1, 11, 8, 12] },
         { name: "operatorFrequency", computeIndex: 5, displayName: "fm# freq", perNote: true, interleave: true, isFilter: false, maxCount: _a$1.operatorCount + 2, effect: null, compatibleInstruments: [1, 11] },
         { name: "operatorAmplitude", computeIndex: 11, displayName: "fm# volume", perNote: true, interleave: false, isFilter: false, maxCount: _a$1.operatorCount + 2, effect: null, compatibleInstruments: [1, 11] },
         { name: "feedbackAmplitude", computeIndex: 17, displayName: "fm feedback", perNote: true, interleave: false, isFilter: false, maxCount: 1, effect: null, compatibleInstruments: [1, 11] },
@@ -8652,6 +8665,13 @@ var beepbox = (function (exports) {
             var _a;
             const categoryIndex = presetValue >> 6;
             const presetIndex = presetValue & 0x3F;
+            if (categoryIndex == 0) {
+                const presets = EditorConfig.presetCategories[0].presets;
+                for (let i = 0; i < presets.length; i++) {
+                    if (presets[i].customType == presetIndex)
+                        return presets[i];
+                }
+            }
             return (_a = EditorConfig.presetCategories[categoryIndex]) === null || _a === void 0 ? void 0 : _a.presets[presetIndex];
         }
         static midiProgramToPresetValue(program) {
@@ -8681,7 +8701,7 @@ var beepbox = (function (exports) {
             return (_a = EditorConfig.presetCategories[0].presets.dictionary) === null || _a === void 0 ? void 0 : _a[TypePresets === null || TypePresets === void 0 ? void 0 : TypePresets[instrument]];
         }
     }
-    EditorConfig.version = "1.4.16";
+    EditorConfig.version = "1.4.17";
     EditorConfig.versionDisplayName = "Slarmoo's Box " + EditorConfig.version;
     EditorConfig.releaseNotesURL = "./patch_notes.html";
     EditorConfig.isOnMac = /^Mac/i.test(navigator.platform) || /Mac OS X/i.test(navigator.userAgent) || /^(iPhone|iPad|iPod)/i.test(navigator.platform) || /(iPhone|iPad|iPod)/i.test(navigator.userAgent);
@@ -8701,6 +8721,7 @@ var beepbox = (function (exports) {
                 { name: TypePresets[8], customType: 8 },
                 { name: TypePresets[9], customType: 9 },
                 { name: TypePresets[11], customType: 11 },
+                { name: TypePresets[12], customType: 12 },
             ])
         },
         {
@@ -9251,6 +9272,665 @@ var beepbox = (function (exports) {
         }
     }
 
+    const maxNestingDepth = 128;
+    const maxVariableCount = 256;
+    const maxArrayLiteralItems = 4096;
+    const renderTimeBudgetMs = 3000;
+    const renderChunkSize = 16384;
+    class BytebeatSyntaxError extends Error {
+        constructor(message, index) {
+            super(message);
+            this.index = index;
+        }
+    }
+    const punctuation = [
+        ">>>=",
+        ">>>", "<<=", ">>=", "**=", "===", "!==",
+        "**", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||", "++", "--", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
+        "+", "-", "*", "/", "%", "&", "|", "^", "~", "!", "<", ">", "=", "?", ":", ",", ";", "(", ")", "[", "]", ".",
+    ];
+    const assignmentOperators = ["=", "+=", "-=", "*=", "/=", "%=", "**=", "<<=", ">>=", ">>>=", "&=", "|=", "^="];
+    const binaryOperatorLevels = [
+        ["||"],
+        ["&&"],
+        ["|"],
+        ["^"],
+        ["&"],
+        ["==", "!=", "===", "!=="],
+        ["<", ">", "<=", ">="],
+        ["<<", ">>", ">>>"],
+        ["+", "-"],
+        ["*", "/", "%"],
+    ];
+    function mathFunction(name, minArgs = 1, maxArgs = minArgs) {
+        return { js: "Math." + name, minArgs: minArgs, maxArgs: maxArgs };
+    }
+    const functions = Object.assign(Object.create(null), {
+        "sin": mathFunction("sin"), "cos": mathFunction("cos"), "tan": mathFunction("tan"),
+        "asin": mathFunction("asin"), "acos": mathFunction("acos"), "atan": mathFunction("atan"), "atan2": mathFunction("atan2", 2),
+        "sinh": mathFunction("sinh"), "cosh": mathFunction("cosh"), "tanh": mathFunction("tanh"),
+        "asinh": mathFunction("asinh"), "acosh": mathFunction("acosh"), "atanh": mathFunction("atanh"),
+        "exp": mathFunction("exp"), "expm1": mathFunction("expm1"),
+        "log": mathFunction("log"), "log2": mathFunction("log2"), "log10": mathFunction("log10"), "log1p": mathFunction("log1p"),
+        "sqrt": mathFunction("sqrt"), "cbrt": mathFunction("cbrt"), "pow": mathFunction("pow", 2), "hypot": mathFunction("hypot", 1, 8),
+        "abs": mathFunction("abs"), "sign": mathFunction("sign"),
+        "floor": mathFunction("floor"), "ceil": mathFunction("ceil"), "round": mathFunction("round"), "trunc": mathFunction("trunc"),
+        "min": mathFunction("min", 1, 8), "max": mathFunction("max", 1, 8),
+        "imul": mathFunction("imul", 2), "clz32": mathFunction("clz32"), "fround": mathFunction("fround"),
+        "int": mathFunction("floor"),
+        "random": { js: "rnd", minArgs: 0, maxArgs: 0 },
+    });
+    const constants = Object.assign(Object.create(null), {
+        "PI": "Math.PI", "E": "Math.E", "LN2": "Math.LN2", "LN10": "Math.LN10", "LOG2E": "Math.LOG2E", "LOG10E": "Math.LOG10E",
+        "SQRT2": "Math.SQRT2", "SQRT1_2": "Math.SQRT1_2",
+        "Infinity": "(1/0)", "NaN": "(0/0)", "true": "true", "false": "false",
+    });
+    const reservedWords = [
+        "var", "let", "const", "function", "return", "for", "while", "do", "if", "else", "switch", "case", "break", "continue",
+        "new", "delete", "typeof", "void", "in", "of", "instanceof", "this", "null", "undefined", "class", "try", "catch", "throw",
+        "eval", "window", "document", "globalThis", "arguments", "async", "await", "yield", "import", "export", "with",
+    ];
+    function isIdentifierStart(code) {
+        return (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code == 95 || code == 36;
+    }
+    function isDigit(code) {
+        return code >= 48 && code <= 57;
+    }
+    function tokenize(source) {
+        const tokens = [];
+        let index = 0;
+        while (index < source.length) {
+            const code = source.charCodeAt(index);
+            if (code == 32 || code == 9 || code == 10 || code == 13 || code == 160) {
+                index++;
+                continue;
+            }
+            if (code == 47 && source.charCodeAt(index + 1) == 47) {
+                while (index < source.length && source.charCodeAt(index) != 10)
+                    index++;
+                continue;
+            }
+            if (code == 47 && source.charCodeAt(index + 1) == 42) {
+                const end = source.indexOf("*/", index + 2);
+                if (end == -1)
+                    throw new BytebeatSyntaxError("This comment is never closed.", index);
+                index = end + 2;
+                continue;
+            }
+            if (isDigit(code) || (code == 46 && isDigit(source.charCodeAt(index + 1)))) {
+                const start = index;
+                let value;
+                const prefix = source.substring(index, index + 2).toLowerCase();
+                if (prefix == "0x" || prefix == "0b" || prefix == "0o") {
+                    const radix = prefix == "0x" ? 16 : (prefix == "0b" ? 2 : 8);
+                    index += 2;
+                    const digitsStart = index;
+                    while (index < source.length && /[0-9a-fA-F]/.test(source.charAt(index)))
+                        index++;
+                    const digits = source.substring(digitsStart, index);
+                    value = digits.length == 0 ? NaN : 0;
+                    for (let i = 0; i < digits.length; i++) {
+                        const digit = parseInt(digits.charAt(i), 16);
+                        if (digit >= radix) {
+                            value = NaN;
+                            break;
+                        }
+                        value = value * radix + digit;
+                    }
+                }
+                else {
+                    while (isDigit(source.charCodeAt(index)))
+                        index++;
+                    if (source.charCodeAt(index) == 46) {
+                        index++;
+                        while (isDigit(source.charCodeAt(index)))
+                            index++;
+                    }
+                    const exponentCode = source.charCodeAt(index);
+                    if (exponentCode == 101 || exponentCode == 69) {
+                        let exponentIndex = index + 1;
+                        const signCode = source.charCodeAt(exponentIndex);
+                        if (signCode == 43 || signCode == 45)
+                            exponentIndex++;
+                        if (isDigit(source.charCodeAt(exponentIndex))) {
+                            index = exponentIndex;
+                            while (isDigit(source.charCodeAt(index)))
+                                index++;
+                        }
+                    }
+                    value = Number(source.substring(start, index));
+                }
+                if (isNaN(value) || isIdentifierStart(source.charCodeAt(index))) {
+                    throw new BytebeatSyntaxError("This number isn't written in a way that is understood.", start);
+                }
+                tokens.push({ type: 0, text: "", value: value, index: start });
+                continue;
+            }
+            if (code == 34 || code == 39 || code == 96) {
+                const start = index;
+                index++;
+                let text = "";
+                while (true) {
+                    if (index >= source.length || source.charCodeAt(index) == 10)
+                        throw new BytebeatSyntaxError("This text is never closed with a matching quote.", start);
+                    const charCode = source.charCodeAt(index);
+                    if (charCode == code) {
+                        index++;
+                        break;
+                    }
+                    if (charCode == 92) {
+                        const escaped = source.charAt(index + 1);
+                        if (escaped == "x" && /^[0-9a-fA-F]{2}$/.test(source.substring(index + 2, index + 4))) {
+                            text += String.fromCharCode(parseInt(source.substring(index + 2, index + 4), 16));
+                            index += 4;
+                        }
+                        else if (escaped == "u" && /^[0-9a-fA-F]{4}$/.test(source.substring(index + 2, index + 6))) {
+                            text += String.fromCharCode(parseInt(source.substring(index + 2, index + 6), 16));
+                            index += 6;
+                        }
+                        else {
+                            switch (escaped) {
+                                case "n":
+                                    text += "\n";
+                                    break;
+                                case "t":
+                                    text += "\t";
+                                    break;
+                                case "r":
+                                    text += "\r";
+                                    break;
+                                case "0":
+                                    text += "\0";
+                                    break;
+                                default:
+                                    text += escaped;
+                                    break;
+                            }
+                            index += 2;
+                        }
+                        continue;
+                    }
+                    if (charCode == 36 && code == 96 && source.charCodeAt(index + 1) == 123) {
+                        throw new BytebeatSyntaxError("Template placeholders aren't supported.", index);
+                    }
+                    text += source.charAt(index);
+                    index++;
+                }
+                tokens.push({ type: 1, text: text, value: 0, index: start });
+                continue;
+            }
+            if (isIdentifierStart(code)) {
+                const start = index;
+                index++;
+                while (index < source.length && (isIdentifierStart(source.charCodeAt(index)) || isDigit(source.charCodeAt(index))))
+                    index++;
+                tokens.push({ type: 2, text: source.substring(start, index), value: 0, index: start });
+                continue;
+            }
+            let matched = null;
+            for (const candidate of punctuation) {
+                if (source.startsWith(candidate, index)) {
+                    matched = candidate;
+                    break;
+                }
+            }
+            if (matched == null) {
+                throw new BytebeatSyntaxError("The character \"" + String.fromCodePoint(source.codePointAt(index)) + "\" isn't understood.", index);
+            }
+            tokens.push({ type: 3, text: matched, value: 0, index: index });
+            index += matched.length;
+        }
+        tokens.push({ type: 4, text: "", value: 0, index: source.length });
+        return tokens;
+    }
+    class BytebeatParser {
+        constructor(source) {
+            this._position = 0;
+            this._depth = 0;
+            this._variables = Object.create(null);
+            this._variableCount = 0;
+            this.tables = [];
+            this._tokens = tokenize(source);
+        }
+        get variableCount() {
+            return this._variableCount;
+        }
+        _peek(offset = 0) {
+            return this._tokens[Math.min(this._position + offset, this._tokens.length - 1)];
+        }
+        _isPunctuation(text, offset = 0) {
+            const token = this._peek(offset);
+            return token.type == 3 && token.text == text;
+        }
+        _take(text) {
+            if (this._isPunctuation(text)) {
+                this._position++;
+                return true;
+            }
+            return false;
+        }
+        _expect(text, purpose) {
+            if (!this._take(text))
+                throw new BytebeatSyntaxError("Expected \"" + text + "\" " + purpose + ".", this._peek().index);
+        }
+        _describe(token) {
+            switch (token.type) {
+                case 4: return "the end of the formula";
+                case 0: return "a number";
+                case 1: return "text";
+                default: return "\"" + token.text + "\"";
+            }
+        }
+        _enter() {
+            if (++this._depth > maxNestingDepth)
+                throw new BytebeatSyntaxError("This formula is nested too deeply.", this._peek().index);
+        }
+        _leave() {
+            this._depth--;
+        }
+        _addTable(values) {
+            this.tables.push(values);
+            return "c" + (this.tables.length - 1);
+        }
+        _variable(name, index) {
+            let variable = this._variables[name];
+            if (variable == undefined) {
+                if (reservedWords.indexOf(name) != -1) {
+                    throw new BytebeatSyntaxError("\"" + name + "\" isn't available here. A bytebeat is a single formula, not a whole program.", index);
+                }
+                if (this._variableCount >= maxVariableCount)
+                    throw new BytebeatSyntaxError("This formula uses too many variables.", index);
+                variable = { slot: this._variableCount++, firstIndex: index, assigned: false };
+                this._variables[name] = variable;
+            }
+            return variable;
+        }
+        _assignmentTarget(token) {
+            const name = token.text;
+            if (name == "t")
+                return "t";
+            if (name == "Math" || functions[name] != undefined || constants[name] != undefined) {
+                throw new BytebeatSyntaxError("\"" + name + "\" is built in and can't be changed.", token.index);
+            }
+            const variable = this._variable(name, token.index);
+            variable.assigned = true;
+            return "v" + variable.slot;
+        }
+        parseProgram() {
+            if (this._peek().type == 4)
+                throw new BytebeatSyntaxError("The formula is empty.", 0);
+            const parts = [];
+            while (true) {
+                while (this._take(";")) { }
+                if (this._peek().type == 4)
+                    break;
+                parts.push(this._parseSequence());
+                if (this._peek().type == 4)
+                    break;
+                if (!this._isPunctuation(";")) {
+                    throw new BytebeatSyntaxError("Didn't expect " + this._describe(this._peek()) + " here.", this._peek().index);
+                }
+            }
+            if (parts.length == 0)
+                throw new BytebeatSyntaxError("The formula is empty.", 0);
+            for (const name in this._variables) {
+                const variable = this._variables[name];
+                if (!variable.assigned)
+                    throw new BytebeatSyntaxError("\"" + name + "\" isn't a known function or variable.", variable.firstIndex);
+            }
+            return parts.length == 1 ? parts[0] : "(" + parts.join(",") + ")";
+        }
+        _parseSequence() {
+            const parts = [this._parseAssignment()];
+            while (this._take(","))
+                parts.push(this._parseAssignment());
+            return parts.length == 1 ? parts[0] : "(" + parts.join(",") + ")";
+        }
+        _parseAssignment() {
+            const token = this._peek();
+            const next = this._peek(1);
+            if (token.type == 2 && next.type == 3 && assignmentOperators.indexOf(next.text) != -1) {
+                this._enter();
+                this._position += 2;
+                const target = this._assignmentTarget(token);
+                const value = this._parseAssignment();
+                this._leave();
+                return "(" + target + next.text + value + ")";
+            }
+            return this._parseTernary();
+        }
+        _parseTernary() {
+            const test = this._parseBinary(0);
+            if (!this._take("?"))
+                return test;
+            this._enter();
+            const whenTrue = this._parseAssignment();
+            this._expect(":", "to finish the \"?\" choice");
+            const whenFalse = this._parseAssignment();
+            this._leave();
+            return "(" + test + "?" + whenTrue + ":" + whenFalse + ")";
+        }
+        _parseBinary(level) {
+            if (level >= binaryOperatorLevels.length)
+                return this._parseExponent();
+            const operators = binaryOperatorLevels[level];
+            const parts = [this._parseBinary(level + 1)];
+            while (true) {
+                const token = this._peek();
+                if (token.type != 3 || operators.indexOf(token.text) == -1)
+                    break;
+                this._position++;
+                parts.push(token.text, this._parseBinary(level + 1));
+            }
+            return parts.length == 1 ? parts[0] : "(" + parts.join("") + ")";
+        }
+        _parseExponent() {
+            const baseToken = this._peek();
+            const base = this._parseUnary();
+            if (!this._isPunctuation("**"))
+                return base;
+            if (baseToken.type == 3 && (baseToken.text == "-" || baseToken.text == "+" || baseToken.text == "~" || baseToken.text == "!")) {
+                throw new BytebeatSyntaxError("Put parentheses around the left side of \"**\" to make it clear what \"" + baseToken.text + "\" applies to.", baseToken.index);
+            }
+            this._position++;
+            this._enter();
+            const exponent = this._parseExponent();
+            this._leave();
+            return "(" + base + "**" + exponent + ")";
+        }
+        _parseUnary() {
+            const token = this._peek();
+            if (token.type == 3) {
+                if (token.text == "-" || token.text == "+" || token.text == "~" || token.text == "!") {
+                    this._position++;
+                    this._enter();
+                    const operand = this._parseUnary();
+                    this._leave();
+                    return "(" + token.text + operand + ")";
+                }
+                if (token.text == "++" || token.text == "--") {
+                    this._position++;
+                    const targetToken = this._peek();
+                    if (targetToken.type != 2)
+                        throw new BytebeatSyntaxError("\"" + token.text + "\" needs a variable to change.", token.index);
+                    this._position++;
+                    return "(" + token.text + this._assignmentTarget(targetToken) + ")";
+                }
+            }
+            return this._parsePostfix();
+        }
+        _parsePostfix() {
+            let result;
+            const token = this._peek();
+            const next = this._peek(1);
+            if (token.type == 2 && next.type == 3 && (next.text == "++" || next.text == "--")) {
+                this._position += 2;
+                result = "(" + this._assignmentTarget(token) + next.text + ")";
+            }
+            else if (token.type == 1) {
+                this._position++;
+                if (this._isPunctuation(".") && this._peek(1).type == 2 && this._peek(1).text == "charCodeAt") {
+                    this._position += 2;
+                    this._expect("(", "after charCodeAt");
+                    this._enter();
+                    const index = this._isPunctuation(")") ? "(0)" : this._parseAssignment();
+                    this._leave();
+                    this._expect(")", "to close charCodeAt");
+                    const codes = [];
+                    for (let i = 0; i < token.text.length; i++)
+                        codes.push(token.text.charCodeAt(i));
+                    result = "(" + this._addTable(codes) + "[" + index + "])";
+                }
+                else {
+                    const values = [];
+                    for (let i = 0; i < token.text.length; i++)
+                        values.push(Number(token.text.charAt(i)));
+                    result = this._addTable(values);
+                }
+            }
+            else {
+                result = this._parsePrimary();
+            }
+            while (true) {
+                if (this._take("[")) {
+                    this._enter();
+                    const index = this._parseSequence();
+                    this._leave();
+                    this._expect("]", "to close the \"[\"");
+                    result = "(" + result + "?.[" + index + "])";
+                }
+                else if (this._isPunctuation(".")) {
+                    const member = this._peek(1);
+                    if (member.type == 2 && member.text == "length") {
+                        this._position += 2;
+                        result = "(" + result + "?.length)";
+                    }
+                    else if (member.type == 2 && member.text == "charCodeAt") {
+                        throw new BytebeatSyntaxError("charCodeAt only works directly on quoted text.", member.index);
+                    }
+                    else {
+                        throw new BytebeatSyntaxError("Didn't expect " + this._describe(member) + " after \".\".", member.index);
+                    }
+                }
+                else if (this._isPunctuation("(")) {
+                    throw new BytebeatSyntaxError("Only the built in functions can be called.", this._peek().index);
+                }
+                else {
+                    break;
+                }
+            }
+            return result;
+        }
+        _parsePrimary() {
+            const token = this._peek();
+            if (token.type == 0) {
+                this._position++;
+                return isFinite(token.value) ? "(" + String(token.value) + ")" : "(1/0)";
+            }
+            if (token.type == 3) {
+                if (token.text == "(") {
+                    this._position++;
+                    this._enter();
+                    const inner = this._parseSequence();
+                    this._leave();
+                    this._expect(")", "to close the \"(\"");
+                    return inner;
+                }
+                if (token.text == "[") {
+                    this._position++;
+                    this._enter();
+                    const items = [];
+                    let allConstant = true;
+                    const constantValues = [];
+                    while (!this._isPunctuation("]")) {
+                        if (items.length >= maxArrayLiteralItems)
+                            throw new BytebeatSyntaxError("This list has too many items.", this._peek().index);
+                        const itemToken = this._peek();
+                        const negative = itemToken.type == 3 && itemToken.text == "-";
+                        const numberToken = this._peek(negative ? 1 : 0);
+                        const afterNumber = this._peek(negative ? 2 : 1);
+                        if (allConstant && numberToken.type == 0 && afterNumber.type == 3 && (afterNumber.text == "," || afterNumber.text == "]")) {
+                            constantValues.push(negative ? -numberToken.value : numberToken.value);
+                        }
+                        else {
+                            allConstant = false;
+                        }
+                        items.push(this._parseAssignment());
+                        if (!this._take(","))
+                            break;
+                    }
+                    this._leave();
+                    this._expect("]", "to close the list");
+                    if (allConstant)
+                        return this._addTable(constantValues);
+                    return "[" + items.join(",") + "]";
+                }
+            }
+            if (token.type == 2) {
+                this._position++;
+                let name = token.text;
+                let nameIndex = token.index;
+                if (name == "Math") {
+                    const member = this._peek(1);
+                    if (!this._isPunctuation(".") || member.type != 2)
+                        throw new BytebeatSyntaxError("Expected a function or constant after \"Math\".", token.index);
+                    this._position += 2;
+                    name = member.text;
+                    nameIndex = member.index;
+                    const isMathConstant = constants[name] != undefined && constants[name].startsWith("Math.");
+                    if (functions[name] == undefined && !isMathConstant)
+                        throw new BytebeatSyntaxError("\"Math." + name + "\" isn't available.", nameIndex);
+                }
+                const func = functions[name];
+                if (func != undefined) {
+                    if (!this._take("("))
+                        throw new BytebeatSyntaxError("\"" + name + "\" is a function, so it needs to be followed by \"(\".", nameIndex);
+                    this._enter();
+                    const args = [];
+                    while (!this._isPunctuation(")")) {
+                        args.push(this._parseAssignment());
+                        if (!this._take(","))
+                            break;
+                    }
+                    this._leave();
+                    this._expect(")", "to close the call to " + name);
+                    if (args.length < func.minArgs || args.length > func.maxArgs) {
+                        const expected = func.minArgs == func.maxArgs ? String(func.minArgs) : func.minArgs + " to " + func.maxArgs;
+                        throw new BytebeatSyntaxError("\"" + name + "\" takes " + expected + " value" + (func.maxArgs == 1 ? "" : "s") + ", not " + args.length + ".", nameIndex);
+                    }
+                    return "(" + func.js + "(" + args.join(",") + "))";
+                }
+                if (constants[name] != undefined)
+                    return "(" + constants[name] + ")";
+                if (name == "t")
+                    return "t";
+                return "v" + this._variable(name, nameIndex).slot;
+            }
+            throw new BytebeatSyntaxError("Didn't expect " + this._describe(token) + " here.", token.index);
+        }
+    }
+    function createRandom(seed) {
+        let state = seed | 0;
+        return () => {
+            state = (state + 0x6D2B79F5) | 0;
+            let x = Math.imul(state ^ (state >>> 15), 1 | state);
+            x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+            return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+        };
+    }
+    function compileBytebeat(code, maxCodeLength = Infinity) {
+        try {
+            if (code.length > maxCodeLength) {
+                throw new BytebeatSyntaxError("The formula is too long. It can have at most " + maxCodeLength + " characters.", maxCodeLength);
+            }
+            const parser = new BytebeatParser(code);
+            const expression = parser.parseProgram();
+            let source = "\"use strict\";\n";
+            for (let i = 0; i < parser.tables.length; i++)
+                source += "const c" + i + " = c[" + i + "];\n";
+            for (let i = 0; i < parser.variableCount; i++)
+                source += "let v" + i + " = 0;\n";
+            source += "return function (out, start, end) {\n";
+            source += "for (let i = start; i < end; i++) {\n";
+            source += "let t = i;\n";
+            source += "out[i] = +" + expression + ";\n";
+            source += "}\n";
+            source += "};\n";
+            const factory = new Function("c", "rnd", source);
+            const tables = parser.tables;
+            return {
+                createRenderer: () => factory(tables, createRandom(0x5eed)),
+                error: null,
+            };
+        }
+        catch (error) {
+            if (error instanceof BytebeatSyntaxError) {
+                return { createRenderer: null, error: { message: error.message, index: error.index } };
+            }
+            return { createRenderer: null, error: { message: "This formula couldn't be compiled.", index: -1 } };
+        }
+    }
+    function bytebeatValueToSample(value, mode) {
+        switch (mode) {
+            case 1:
+                return (((value + 128) & 255) - 127.5) / 127.5;
+            case 2:
+                return (value != value) ? 0.0 : Math.max(-1.0, Math.min(1.0, value));
+            default:
+                return ((value & 255) - 127.5) / 127.5;
+        }
+    }
+    function renderBytebeatUncached(code, mode, length, maxCodeLength) {
+        const wave = new Float32Array(length + 1);
+        const integral = new Float64Array(length + 1);
+        const program = compileBytebeat(code, maxCodeLength);
+        if (program.createRenderer == null) {
+            return { wave: wave, integral: integral, error: program.error, timedOut: false };
+        }
+        let rendered = 0;
+        let timedOut = false;
+        let error = null;
+        try {
+            const renderer = program.createRenderer();
+            const startTime = Date.now();
+            while (rendered < length) {
+                const end = Math.min(length, rendered + renderChunkSize);
+                renderer(integral, rendered, end);
+                rendered = end;
+                if (rendered < length && Date.now() - startTime > renderTimeBudgetMs) {
+                    timedOut = true;
+                    break;
+                }
+            }
+        }
+        catch (exception) {
+            error = { message: "This formula failed while it was running.", index: -1 };
+            rendered = 0;
+        }
+        let sum = 0.0;
+        for (let i = 0; i < rendered; i++) {
+            const sample = bytebeatValueToSample(integral[i], mode);
+            integral[i] = sample;
+            sum += sample;
+        }
+        const average = rendered > 0 ? sum / rendered : 0.0;
+        let cumulative = 0.0;
+        for (let i = 0; i < length; i++) {
+            const sample = i < rendered ? integral[i] - average : 0.0;
+            wave[i] = sample;
+            integral[i] = cumulative;
+            cumulative += sample;
+        }
+        wave[length] = wave[0];
+        integral[length] = 0.0;
+        return { wave: wave, integral: integral, error: error, timedOut: timedOut };
+    }
+    const renderCache = new Map();
+    const renderCacheMaxSamples = 1 << 22;
+    let renderCacheSamples = 0;
+    function renderBytebeat(code, mode, length, maxCodeLength = Infinity) {
+        length = Math.max(1, length | 0);
+        const key = mode + "," + length + "," + maxCodeLength + "," + code;
+        const cached = renderCache.get(key);
+        if (cached != undefined) {
+            renderCache.delete(key);
+            renderCache.set(key, cached);
+            return cached;
+        }
+        const render = renderBytebeatUncached(code, mode, length, maxCodeLength);
+        if (!render.timedOut) {
+            renderCache.set(key, render);
+            renderCacheSamples += length;
+            for (const oldKey of renderCache.keys()) {
+                if (renderCacheSamples <= renderCacheMaxSamples || oldKey == key)
+                    break;
+                renderCacheSamples -= renderCache.get(oldKey).wave.length - 1;
+                renderCache.delete(oldKey);
+            }
+        }
+        return render;
+    }
+
     class EventManager {
         constructor() {
             this.activeEvents = [];
@@ -9697,6 +10377,39 @@ var beepbox = (function (exports) {
         buffer.push(base64IntToCharCode[(x >>> (6 * 2)) & 0x3f]);
         buffer.push(base64IntToCharCode[(x >>> (6 * 1)) & 0x3f]);
         buffer.push(base64IntToCharCode[(x >>> (6 * 0)) & 0x3f]);
+    }
+    function encodeBase64Bytes(buffer, bytes) {
+        for (let i = 0; i < bytes.length; i += 3) {
+            const byte0 = bytes[i];
+            const byte1 = (i + 1 < bytes.length) ? bytes[i + 1] : 0;
+            const byte2 = (i + 2 < bytes.length) ? bytes[i + 2] : 0;
+            buffer.push(base64IntToCharCode[byte0 >> 2], base64IntToCharCode[((byte0 & 0x3) << 4) | (byte1 >> 4)]);
+            if (i + 1 < bytes.length)
+                buffer.push(base64IntToCharCode[((byte1 & 0xf) << 2) | (byte2 >> 6)]);
+            if (i + 2 < bytes.length)
+                buffer.push(base64IntToCharCode[byte2 & 0x3f]);
+        }
+    }
+    function base64LengthOfBytes(byteCount) {
+        return Math.ceil(byteCount * 4 / 3);
+    }
+    function decodeBase64Bytes(compressed, charIndex, byteCount) {
+        const bytes = new Uint8Array(byteCount);
+        const read = (index) => base64CharCodeToInt[compressed.charCodeAt(index)] | 0;
+        for (let i = 0; i < byteCount; i += 3) {
+            const char0 = read(charIndex++);
+            const char1 = read(charIndex++);
+            bytes[i] = (char0 << 2) | (char1 >> 4);
+            if (i + 1 < byteCount) {
+                const char2 = read(charIndex++);
+                bytes[i + 1] = ((char1 & 0xf) << 4) | (char2 >> 2);
+                if (i + 2 < byteCount) {
+                    const char3 = read(charIndex++);
+                    bytes[i + 2] = ((char2 & 0x3) << 6) | char3;
+                }
+            }
+        }
+        return bytes;
     }
     function decode32BitNumber(compressed, charIndex) {
         let x = 0;
@@ -10948,6 +11661,16 @@ var beepbox = (function (exports) {
             this.feedbackAmplitude = 0;
             this.customChipWave = new Float32Array(64);
             this.customChipWaveIntegral = new Float32Array(65);
+            this.bytebeatCode = Config.bytebeatDefaultCode;
+            this.bytebeatMode = 0;
+            this.bytebeatTuning = 0;
+            this.bytebeatSampleRate = Config.bytebeatSampleRateDefault;
+            this.bytebeatLength = Config.bytebeatLengthDefault;
+            this.bytebeatRootKey = Config.bytebeatRootKeyDefault;
+            this._bytebeatRender = null;
+            this._bytebeatRenderCode = "";
+            this._bytebeatRenderMode = 0;
+            this._bytebeatRenderLength = 0;
             this.operators = [];
             this.harmonicsWave = new HarmonicsWave();
             this.drumsetEnvelopes = [];
@@ -10991,6 +11714,44 @@ var beepbox = (function (exports) {
             }
             this.customChipWaveIntegral[64] = 0.0;
             this.isNoiseInstrument = isNoiseChannel;
+        }
+        getBytebeatRender() {
+            if (this._bytebeatRender == null || this._bytebeatRenderCode !== this.bytebeatCode || this._bytebeatRenderMode != this.bytebeatMode || this._bytebeatRenderLength != this.bytebeatLength) {
+                this._bytebeatRender = renderBytebeat(this.bytebeatCode, this.bytebeatMode, this.bytebeatLength, Config.bytebeatCodeMaxLength);
+                this._bytebeatRenderCode = this.bytebeatCode;
+                this._bytebeatRenderMode = this.bytebeatMode;
+                this._bytebeatRenderLength = this.bytebeatLength;
+            }
+            return this._bytebeatRender;
+        }
+        getLoopableWaveLength() {
+            if (this.type == 12)
+                return this.bytebeatLength + 1;
+            return Config.rawRawChipWaves[this.chipWave].samples.length;
+        }
+        resetLoopControls() {
+            this.isUsingAdvancedLoopControls = false;
+            this.chipWaveLoopStart = 0;
+            this.chipWaveLoopEnd = this.getLoopableWaveLength() - 1;
+            this.chipWaveLoopMode = 0;
+            this.chipWavePlayBackwards = false;
+            this.chipWaveStartOffset = 0;
+        }
+        resetBytebeat() {
+            this.bytebeatCode = Config.bytebeatDefaultCode;
+            this.bytebeatMode = 0;
+            this.bytebeatTuning = 0;
+            this.bytebeatSampleRate = Config.bytebeatSampleRateDefault;
+            this.bytebeatLength = Config.bytebeatLengthDefault;
+            this.bytebeatRootKey = Config.bytebeatRootKeyDefault;
+        }
+        setBytebeat(code, mode, tuning, sampleRate, length, rootKey) {
+            this.bytebeatCode = (typeof code == "string") ? code.substring(0, Config.bytebeatCodeMaxLength) : Config.bytebeatDefaultCode;
+            this.bytebeatMode = clamp(0, 3, (mode | 0));
+            this.bytebeatTuning = clamp(0, 2, (tuning | 0));
+            this.bytebeatSampleRate = clamp(Config.bytebeatSampleRateMin, Config.bytebeatSampleRateMax + 1, Math.round(+sampleRate) || Config.bytebeatSampleRateDefault);
+            this.bytebeatLength = clamp(Config.bytebeatLengthMin, Config.bytebeatLengthMax + 1, Math.round(+length) || Config.bytebeatLengthDefault);
+            this.bytebeatRootKey = clamp(0, Config.bytebeatRootKeyMax + 1, (rootKey == undefined || isNaN(+rootKey)) ? Config.bytebeatRootKeyDefault : Math.round(+rootKey));
         }
         setTypeAndReset(type, isNoiseChannel, isModChannel) {
             if (isModChannel)
@@ -11076,6 +11837,11 @@ var beepbox = (function (exports) {
                         this.customChipWaveIntegral[i] = cumulative;
                     }
                     this.customChipWaveIntegral[64] = 0.0;
+                    break;
+                case 12:
+                    this.chord = Config.chords.dictionary["simultaneous"].index;
+                    this.resetBytebeat();
+                    this.resetLoopControls();
                     break;
                 case 1:
                     this.chord = Config.chords.dictionary["custom interval"].index;
@@ -11401,6 +12167,20 @@ var beepbox = (function (exports) {
             }
             else if (this.type == 0) {
                 instrumentObject["wave"] = Config.chipWaves[this.chipWave].name;
+                instrumentObject["isUsingAdvancedLoopControls"] = this.isUsingAdvancedLoopControls;
+                instrumentObject["chipWaveLoopStart"] = this.chipWaveLoopStart;
+                instrumentObject["chipWaveLoopEnd"] = this.chipWaveLoopEnd;
+                instrumentObject["chipWaveLoopMode"] = this.chipWaveLoopMode;
+                instrumentObject["chipWavePlayBackwards"] = this.chipWavePlayBackwards;
+                instrumentObject["chipWaveStartOffset"] = this.chipWaveStartOffset;
+            }
+            else if (this.type == 12) {
+                instrumentObject["bytebeatCode"] = this.bytebeatCode;
+                instrumentObject["bytebeatMode"] = Config.bytebeatModeNames[this.bytebeatMode];
+                instrumentObject["bytebeatTuning"] = Config.bytebeatTuningNames[this.bytebeatTuning];
+                instrumentObject["bytebeatSampleRate"] = this.bytebeatSampleRate;
+                instrumentObject["bytebeatLength"] = this.bytebeatLength;
+                instrumentObject["bytebeatRootKey"] = this.bytebeatRootKey;
                 instrumentObject["isUsingAdvancedLoopControls"] = this.isUsingAdvancedLoopControls;
                 instrumentObject["chipWaveLoopStart"] = this.chipWaveLoopStart;
                 instrumentObject["chipWaveLoopEnd"] = this.chipWaveLoopEnd;
@@ -12214,7 +12994,12 @@ var beepbox = (function (exports) {
                     }
                 }
             }
-            if (type === 0) {
+            if (type === 12) {
+                const modeIndex = Config.bytebeatModeNames.indexOf(String(instrumentObject["bytebeatMode"]).toLowerCase());
+                const tuningIndex = Config.bytebeatTuningNames.indexOf(String(instrumentObject["bytebeatTuning"]).toLowerCase());
+                this.setBytebeat(instrumentObject["bytebeatCode"], Math.max(0, modeIndex), Math.max(0, tuningIndex), instrumentObject["bytebeatSampleRate"], instrumentObject["bytebeatLength"], instrumentObject["bytebeatRootKey"]);
+            }
+            if (type === 0 || type === 12) {
                 if (instrumentObject["isUsingAdvancedLoopControls"] != undefined) {
                     this.isUsingAdvancedLoopControls = instrumentObject["isUsingAdvancedLoopControls"];
                     this.chipWaveLoopStart = instrumentObject["chipWaveLoopStart"];
@@ -12226,7 +13011,7 @@ var beepbox = (function (exports) {
                 else {
                     this.isUsingAdvancedLoopControls = false;
                     this.chipWaveLoopStart = 0;
-                    this.chipWaveLoopEnd = Config.rawRawChipWaves[this.chipWave].samples.length - 1;
+                    this.chipWaveLoopEnd = this.getLoopableWaveLength() - 1;
                     this.chipWaveLoopMode = 0;
                     this.chipWavePlayBackwards = false;
                     this.chipWaveStartOffset = 0;
@@ -12906,16 +13691,18 @@ var beepbox = (function (exports) {
                             buffer.push(119, base64IntToCharCode[instrument.chipWave]);
                             buffer.push(base64IntToCharCode[0]);
                         }
-                        buffer.push(121);
-                        const encodedLoopMode = ((clamp(0, 31 + 1, instrument.chipWaveLoopMode) << 1)
-                            | (instrument.isUsingAdvancedLoopControls ? 1 : 0));
-                        buffer.push(base64IntToCharCode[encodedLoopMode]);
-                        const encodedReleaseMode = ((clamp(0, 31 + 1, 0) << 1)
-                            | (instrument.chipWavePlayBackwards ? 1 : 0));
-                        buffer.push(base64IntToCharCode[encodedReleaseMode]);
-                        encode32BitNumber(buffer, instrument.chipWaveLoopStart);
-                        encode32BitNumber(buffer, instrument.chipWaveLoopEnd);
-                        encode32BitNumber(buffer, instrument.chipWaveStartOffset);
+                        Song._encodeLoopControls(buffer, instrument);
+                    }
+                    else if (instrument.type == 12) {
+                        buffer.push(89);
+                        buffer.push(base64IntToCharCode[(instrument.bytebeatMode & 0x3) | ((instrument.bytebeatTuning & 0x1) << 2)]);
+                        buffer.push(base64IntToCharCode[(instrument.bytebeatRootKey >> 6) & 0x3f], base64IntToCharCode[instrument.bytebeatRootKey & 0x3f]);
+                        buffer.push(base64IntToCharCode[(instrument.bytebeatSampleRate >> 12) & 0x3f], base64IntToCharCode[(instrument.bytebeatSampleRate >> 6) & 0x3f], base64IntToCharCode[instrument.bytebeatSampleRate & 0x3f]);
+                        buffer.push(base64IntToCharCode[(instrument.bytebeatLength >> 18) & 0x3f], base64IntToCharCode[(instrument.bytebeatLength >> 12) & 0x3f], base64IntToCharCode[(instrument.bytebeatLength >> 6) & 0x3f], base64IntToCharCode[instrument.bytebeatLength & 0x3f]);
+                        const codeBytes = new TextEncoder().encode(instrument.bytebeatCode);
+                        buffer.push(base64IntToCharCode[(codeBytes.length >> 12) & 0x3f], base64IntToCharCode[(codeBytes.length >> 6) & 0x3f], base64IntToCharCode[codeBytes.length & 0x3f]);
+                        encodeBase64Bytes(buffer, codeBytes);
+                        Song._encodeLoopControls(buffer, instrument);
                     }
                     else if (instrument.type == 1 || instrument.type == 11) {
                         if (instrument.type == 1) {
@@ -13289,6 +14076,18 @@ var beepbox = (function (exports) {
                 }
                 return result + customSamplesStr;
             }
+        }
+        static _encodeLoopControls(buffer, instrument) {
+            buffer.push(121);
+            const encodedLoopMode = ((clamp(0, 31 + 1, instrument.chipWaveLoopMode) << 1)
+                | (instrument.isUsingAdvancedLoopControls ? 1 : 0));
+            buffer.push(base64IntToCharCode[encodedLoopMode]);
+            const encodedReleaseMode = ((clamp(0, 31 + 1, 0) << 1)
+                | (instrument.chipWavePlayBackwards ? 1 : 0));
+            buffer.push(base64IntToCharCode[encodedReleaseMode]);
+            encode32BitNumber(buffer, instrument.chipWaveLoopStart);
+            encode32BitNumber(buffer, instrument.chipWaveLoopEnd);
+            encode32BitNumber(buffer, instrument.chipWaveStartOffset);
         }
         static _envelopeFromLegacyIndex(legacyIndex) {
             if (legacyIndex == 0)
@@ -13709,7 +14508,7 @@ var beepbox = (function (exports) {
                             }
                             validateRange(0, this.channels.length - 1, instrumentChannelIterator);
                             const instrument = this.channels[instrumentChannelIterator].instruments[instrumentIndexIterator];
-                            let instrumentType = validateRange(0, 12 - 1, base64CharCodeToInt[compressed.charCodeAt(charIndex++)]);
+                            let instrumentType = validateRange(0, 13 - 1, base64CharCodeToInt[compressed.charCodeAt(charIndex++)]);
                             if ((fromJummBox && beforeFive) || (beforeFour && fromGoldBox)) {
                                 if (instrumentType == 7 || instrumentType == 8) {
                                     instrumentType += 2;
@@ -14616,6 +15415,19 @@ var beepbox = (function (exports) {
                                 instrument.customChipWaveIntegral[i] = cumulative;
                             }
                             instrument.customChipWaveIntegral[64] = 0.0;
+                        }
+                        break;
+                    case 89:
+                        {
+                            const instrument = this.channels[instrumentChannelIterator].instruments[instrumentIndexIterator];
+                            const modeAndTuning = base64CharCodeToInt[compressed.charCodeAt(charIndex++)];
+                            const rootKey = (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 6) | base64CharCodeToInt[compressed.charCodeAt(charIndex++)];
+                            const sampleRate = (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 12) | (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 6) | base64CharCodeToInt[compressed.charCodeAt(charIndex++)];
+                            const length = (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 18) | (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 12) | (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 6) | base64CharCodeToInt[compressed.charCodeAt(charIndex++)];
+                            const codeByteCount = (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 12) | (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 6) | base64CharCodeToInt[compressed.charCodeAt(charIndex++)];
+                            const code = new TextDecoder().decode(decodeBase64Bytes(compressed, charIndex, codeByteCount));
+                            charIndex += base64LengthOfBytes(codeByteCount);
+                            instrument.setBytebeat(code, modeAndTuning & 0x3, (modeAndTuning >> 2) & 0x1, sampleRate, length, rootKey);
                         }
                         break;
                     case 79:
@@ -18080,6 +18892,16 @@ var beepbox = (function (exports) {
                 this.chipWavePlayBackwards = instrument.chipWavePlayBackwards;
                 this.chipWaveStartOffset = instrument.chipWaveStartOffset;
             }
+            else if (instrument.type == 12) {
+                const render = instrument.getBytebeatRender();
+                this.wave = (this.aliases) ? render.wave : render.integral;
+                this.isUsingAdvancedLoopControls = instrument.isUsingAdvancedLoopControls;
+                this.chipWaveLoopStart = instrument.chipWaveLoopStart;
+                this.chipWaveLoopEnd = instrument.chipWaveLoopEnd;
+                this.chipWaveLoopMode = instrument.chipWaveLoopMode;
+                this.chipWavePlayBackwards = instrument.chipWavePlayBackwards;
+                this.chipWaveStartOffset = instrument.chipWaveStartOffset;
+            }
             else if (instrument.type == 9) {
                 this.wave = (this.aliases) ? instrument.customChipWave : instrument.customChipWaveIntegral;
                 this.volumeScale = 0.05;
@@ -20254,6 +21076,15 @@ var beepbox = (function (exports) {
             else if (instrument.type == 9) {
                 baseExpression = Config.chipBaseExpression;
             }
+            else if (instrument.type == 12) {
+                baseExpression = Config.bytebeatBaseExpression;
+                if (instrument.bytebeatTuning == 0) {
+                    const samplePitch = (69 - 12 * Math.log2(440)) - 12 * Math.log2(instrument.bytebeatLength / instrument.bytebeatSampleRate);
+                    const pitchOffset = samplePitch - instrument.bytebeatRootKey;
+                    basePitch += pitchOffset;
+                    expressionReferencePitch += pitchOffset;
+                }
+            }
             else if (instrument.type == 5) {
                 baseExpression = Config.harmonicsBaseExpression;
             }
@@ -20278,8 +21109,8 @@ var beepbox = (function (exports) {
             if ((tone.atNoteStart && !transition.isSeamless && !tone.forceContinueAtStart) || tone.freshlyAllocated) {
                 tone.reset();
                 instrumentState.envelopeComputer.reset();
-                if (instrument.type == 0 && instrument.isUsingAdvancedLoopControls) {
-                    const chipWaveLength = Config.rawRawChipWaves[instrument.chipWave].samples.length - 1;
+                if ((instrument.type == 0 || instrument.type == 12) && instrument.isUsingAdvancedLoopControls) {
+                    const chipWaveLength = instrument.getLoopableWaveLength() - 1;
                     const firstOffset = instrument.chipWaveStartOffset / chipWaveLength;
                     const lastOffset = 0.999999999999999;
                     for (let i = 0; i < Config.maxPitchOrOperatorCount; i++) {
@@ -20800,7 +21631,7 @@ var beepbox = (function (exports) {
                     settingsExpressionMult *= Math.pow(2.0, 0.7 * (1.0 - useSustainStart / (Config.stringSustainRange - 1)));
                 }
                 const startFreq = Instrument.frequencyFromPitch(startPitch);
-                if (instrument.type == 0 || instrument.type == 9 || instrument.type == 5 || instrument.type == 7 || instrument.type == 3 || instrument.type == 6 || instrument.type == 2 || instrument.type == 4) {
+                if (instrument.type == 0 || instrument.type == 9 || instrument.type == 12 || instrument.type == 5 || instrument.type == 7 || instrument.type == 3 || instrument.type == 6 || instrument.type == 2 || instrument.type == 4) {
                     const unisonVoices = instrument.unisonVoices;
                     const unisonSpread = instrument.unisonSpread;
                     const unisonOffset = instrument.unisonOffset;
@@ -21111,6 +21942,12 @@ var beepbox = (function (exports) {
                 return Synth.chipSynth;
             }
             else if (instrument.type == 9) {
+                return Synth.chipSynth;
+            }
+            else if (instrument.type == 12) {
+                if (instrument.isUsingAdvancedLoopControls) {
+                    return Synth.loopableChipSynth;
+                }
                 return Synth.chipSynth;
             }
             else if (instrument.type == 5) {

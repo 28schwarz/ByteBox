@@ -129,6 +129,22 @@
         <font color="#247d1d">Patch Notes (in reverse chronological order);</font>
     </h1>
 
+    <h2>Version 1.4.17 (Bytebeat)<a class="link">⤳</a></h2>
+    <h3>
+        <ul>
+            <li> Added a new instrument type that branches off of the chip instrument: chip (bytebeat) </li>
+            <ul>
+                <li> Write a bytebeat formula such as <code>t*(42&amp;t&gt;&gt;10)</code> and it is compiled into a sample that the instrument plays </li>
+                <li> Supports bytebeat, signed bytebeat and floatbeat formulas, with your choice of sample rate and sample length </li>
+                <li> The sample can be tuned like a custom sample with a root key, or treated as a single cycle like a regular chip wave </li>
+                <li> The formula editor shows the compiled sample, points out mistakes as you type, can preview the sample, and comes with a few examples </li>
+                <li> Loop controls, unison and aliasing all work the same way that they do for chip instruments </li>
+                <li> Formulas are saved in the song url and in json exports. They are compiled by Slarmoo's Box itself rather than run as code by your browser, so opening a song from someone else is safe </li>
+            </ul>
+        </ul>
+    </h3>
+    <p>11/14/2026</p>
+
     <h2>Version 1.4.16 (Patch)<a class="link">⤳</a></h2>
     <h3>
         <ul>

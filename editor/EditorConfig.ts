@@ -23,7 +23,7 @@ export function prettyNumber(value: number): string {
 }
 
 export class EditorConfig {
-    public static readonly version: string = "1.4.16"; // Currently using patch versions in display (unlike JB)
+    public static readonly version: string = "1.4.17"; // Currently using patch versions in display (unlike JB)
     public static readonly versionDisplayName: string = "Slarmoo's Box " + EditorConfig.version;
 
     public static readonly releaseNotesURL: string = "./patch_notes.html";
@@ -49,6 +49,7 @@ export class EditorConfig {
                 { name: TypePresets[InstrumentType.supersaw], customType: InstrumentType.supersaw },
                 { name: TypePresets[InstrumentType.customChipWave], customType: InstrumentType.customChipWave },
                 { name: TypePresets[InstrumentType.fm6op], customType: InstrumentType.fm6op },
+                { name: TypePresets[InstrumentType.bytebeat], customType: InstrumentType.bytebeat },
             ])
         },
         {
@@ -429,6 +430,14 @@ export class EditorConfig {
     public static valueToPreset(presetValue: number): Preset | null {
         const categoryIndex: number = presetValue >> 6;
         const presetIndex: number = presetValue & 0x3F;
+        if (categoryIndex == 0) {
+            // The preset value of a custom instrument is its InstrumentType, which stops lining up with
+            // the positions in the list of custom instruments after "mod", as that one isn't listed.
+            const presets: DictionaryArray<Preset> = EditorConfig.presetCategories[0].presets;
+            for (let i: number = 0; i < presets.length; i++) {
+                if (presets[i].customType == presetIndex) return presets[i];
+            }
+        }
         return EditorConfig.presetCategories[categoryIndex]?.presets[presetIndex];
     }
 

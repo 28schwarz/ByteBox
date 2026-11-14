@@ -1,5 +1,5 @@
 import { HTML, SVG } from "imperative-html/dist/esm/elements-strict";
-import { sampleLoadingState, SampleLoadingStatus, ChipWave, Config } from "../synth/SynthConfig";
+import { sampleLoadingState, SampleLoadingStatus, ChipWave, Config, InstrumentType } from "../synth/SynthConfig";
 import { Instrument } from "../synth/synth";
 import { ColorConfig } from "./ColorConfig";
 import { ChangeGroup } from "./Change";
@@ -431,8 +431,10 @@ export class VisualLoopControlsPrompt {
         this._waveformContext = this._waveformCanvas.getContext("2d");
         this._overlayContext = this._overlayCanvas.getContext("2d");
         this._instrument = this._doc.song.channels[this._doc.channel].instruments[this._doc.getCurrentInstrument()];
+        const isBytebeat: boolean = this._instrument.type == InstrumentType.bytebeat;
         const rawChipWave: ChipWave = Config.rawRawChipWaves[this._instrument.chipWave];
-        const customSampleIsLoading: boolean = (rawChipWave.isCustomSampled === true || rawChipWave.isSampled == true) && sampleLoadingState.statusTable[this._instrument.chipWave] !== SampleLoadingStatus.loaded;
+        // Bytebeat instruments loop the sample that their formula was compiled into, which is always ready.
+        const customSampleIsLoading: boolean = !isBytebeat && (rawChipWave.isCustomSampled === true || rawChipWave.isSampled == true) && sampleLoadingState.statusTable[this._instrument.chipWave] !== SampleLoadingStatus.loaded;
         if (customSampleIsLoading) {
             this._sampleIsLoadingMessage.style.display = "";
             this._loopControlsContainer.style.display = "none";
@@ -441,7 +443,7 @@ export class VisualLoopControlsPrompt {
             this._sampleIsLoadingMessage.style.display = "none";
             this._loopControlsContainer.style.display = "";
             this._chipWaveIsUnavailable = false;
-            this._waveformData = rawChipWave.samples;
+            this._waveformData = isBytebeat ? this._instrument.getBytebeatRender().wave : rawChipWave.samples;
             this._waveformDataLength = this._waveformData.length - 1;
             this._initialChipWaveLoopMode = this._instrument.chipWaveLoopMode;
             this._initialChipWaveStartOffset = this._instrument.chipWaveStartOffset;

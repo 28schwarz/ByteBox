@@ -4,6 +4,7 @@ import { startLoadingSample, sampleLoadingState, SampleLoadingState, sampleLoadE
 import { Preset, EditorConfig } from "../editor/EditorConfig";
 import { scaleElementsByFactor, inverseRealFourierTransform } from "./FFT";
 import { Deque } from "./Deque";
+import { BytebeatMode, BytebeatTuning, BytebeatRender, renderBytebeat } from "./Bytebeat";
 import { events } from "../global/Events";
 import { FilterCoefficients, FrequencyResponse, DynamicBiquadFilter, warpInfinityToNyquist } from "./filtering";
 import { xxHash32 } from "js-xxhash";
@@ -61,6 +62,43 @@ function encode32BitNumber(buffer: number[], x: number): void {
     buffer.push(base64IntToCharCode[(x >>> (6 * 1)) & 0x3f]);
     //                                  111111
     buffer.push(base64IntToCharCode[(x >>> (6 * 0)) & 0x3f]);
+}
+
+// Packs bytes into base64 characters, six bits at a time. Used for the formulas of bytebeat instruments.
+function encodeBase64Bytes(buffer: number[], bytes: Uint8Array): void {
+    for (let i: number = 0; i < bytes.length; i += 3) {
+        const byte0: number = bytes[i];
+        const byte1: number = (i + 1 < bytes.length) ? bytes[i + 1] : 0;
+        const byte2: number = (i + 2 < bytes.length) ? bytes[i + 2] : 0;
+        buffer.push(base64IntToCharCode[byte0 >> 2], base64IntToCharCode[((byte0 & 0x3) << 4) | (byte1 >> 4)]);
+        if (i + 1 < bytes.length) buffer.push(base64IntToCharCode[((byte1 & 0xf) << 2) | (byte2 >> 6)]);
+        if (i + 2 < bytes.length) buffer.push(base64IntToCharCode[byte2 & 0x3f]);
+    }
+}
+
+// The number of base64 characters that encodeBase64Bytes produces for a given number of bytes.
+function base64LengthOfBytes(byteCount: number): number {
+    return Math.ceil(byteCount * 4 / 3);
+}
+
+function decodeBase64Bytes(compressed: string, charIndex: number, byteCount: number): Uint8Array {
+    const bytes: Uint8Array = new Uint8Array(byteCount);
+    // Characters past the end of the string read as NaN, which the bitwise operators treat as zero.
+    const read = (index: number): number => base64CharCodeToInt[compressed.charCodeAt(index)] | 0;
+    for (let i: number = 0; i < byteCount; i += 3) {
+        const char0: number = read(charIndex++);
+        const char1: number = read(charIndex++);
+        bytes[i] = (char0 << 2) | (char1 >> 4);
+        if (i + 1 < byteCount) {
+            const char2: number = read(charIndex++);
+            bytes[i + 1] = ((char1 & 0xf) << 4) | (char2 >> 2);
+            if (i + 2 < byteCount) {
+                const char3: number = read(charIndex++);
+                bytes[i + 2] = ((char2 & 0x3) << 6) | char3;
+            }
+        }
+    }
+    return bytes;
 }
 
 // @TODO: This is error-prone, because the caller has to remember to increment
@@ -258,7 +296,7 @@ const enum SongTagCode {
     feedbackEnvelope = CharCode.V, // added in BeepBox URL version 6, DEPRECATED
     pulseWidth = CharCode.W, // added in BeepBox URL version 7
     aliases = CharCode.X, // added in JummBox URL version 4 for aliases, DEPRECATED, [UB] repurposed for PWM decimal offset (DEPRECATED as well)
-    //                      = CharCode.Y, 
+    bytebeat = CharCode.Y, // added in Slarmoo's Box 1.4.17 for the formula and settings of bytebeat instruments
     //	                    = CharCode.Z,
     //	                    = CharCode.NUM_0,
     //	                    = CharCode.NUM_1,
@@ -1685,6 +1723,18 @@ export class Instrument {
     public feedbackAmplitude: number = 0;
     public customChipWave: Float32Array = new Float32Array(64);
     public customChipWaveIntegral: Float32Array = new Float32Array(65); // One extra element for wrap-around in chipSynth.
+    // Bytebeat instruments compile a formula into a sample, and are otherwise played like chip instruments,
+    // including the chipWave loop controls above.
+    public bytebeatCode: string = Config.bytebeatDefaultCode;
+    public bytebeatMode: BytebeatMode = BytebeatMode.bytebeat;
+    public bytebeatTuning: BytebeatTuning = BytebeatTuning.sample;
+    public bytebeatSampleRate: number = Config.bytebeatSampleRateDefault; // Only affects the pitch that the sample is played at.
+    public bytebeatLength: number = Config.bytebeatLengthDefault; // In samples, which is also the number of values of "t".
+    public bytebeatRootKey: number = Config.bytebeatRootKeyDefault;
+    private _bytebeatRender: BytebeatRender | null = null;
+    private _bytebeatRenderCode: string = "";
+    private _bytebeatRenderMode: BytebeatMode = BytebeatMode.bytebeat;
+    private _bytebeatRenderLength: number = 0;
     public readonly operators: Operator[] = [];
     public readonly spectrumWave: SpectrumWave;
     public readonly harmonicsWave: HarmonicsWave = new HarmonicsWave();
@@ -1761,6 +1811,55 @@ export class Instrument {
         //properly sets the isNoiseInstrument value
         this.isNoiseInstrument = isNoiseChannel;
 
+    }
+
+    // The sample that a bytebeat instrument's formula compiles to. It is rendered the first time it is
+    // asked for, and again whenever the formula or one of the settings that shape the sample has changed.
+    public getBytebeatRender(): BytebeatRender {
+        if (this._bytebeatRender == null || this._bytebeatRenderCode !== this.bytebeatCode || this._bytebeatRenderMode != this.bytebeatMode || this._bytebeatRenderLength != this.bytebeatLength) {
+            this._bytebeatRender = renderBytebeat(this.bytebeatCode, this.bytebeatMode, this.bytebeatLength, Config.bytebeatCodeMaxLength);
+            this._bytebeatRenderCode = this.bytebeatCode;
+            this._bytebeatRenderMode = this.bytebeatMode;
+            this._bytebeatRenderLength = this.bytebeatLength;
+        }
+        return this._bytebeatRender;
+    }
+
+    // The length of the wave that the loop controls of chip and bytebeat instruments apply to. Like the
+    // length of a chip wave's samples, this counts the extra sample at the end that repeats the first one.
+    public getLoopableWaveLength(): number {
+        if (this.type == InstrumentType.bytebeat) return this.bytebeatLength + 1;
+        return Config.rawRawChipWaves[this.chipWave].samples.length;
+    }
+
+    // Chip and bytebeat instruments share the loop controls, which are measured in samples of whichever
+    // wave the instrument plays. This points them back at the whole of the current wave.
+    public resetLoopControls(): void {
+        this.isUsingAdvancedLoopControls = false;
+        this.chipWaveLoopStart = 0;
+        this.chipWaveLoopEnd = this.getLoopableWaveLength() - 1;
+        this.chipWaveLoopMode = 0;
+        this.chipWavePlayBackwards = false;
+        this.chipWaveStartOffset = 0;
+    }
+
+    public resetBytebeat(): void {
+        this.bytebeatCode = Config.bytebeatDefaultCode;
+        this.bytebeatMode = BytebeatMode.bytebeat;
+        this.bytebeatTuning = BytebeatTuning.sample;
+        this.bytebeatSampleRate = Config.bytebeatSampleRateDefault;
+        this.bytebeatLength = Config.bytebeatLengthDefault;
+        this.bytebeatRootKey = Config.bytebeatRootKeyDefault;
+    }
+
+    // Applies bytebeat settings that may have come from outside of the editor, making sure each is in range.
+    public setBytebeat(code: any, mode: any, tuning: any, sampleRate: any, length: any, rootKey: any): void {
+        this.bytebeatCode = (typeof code == "string") ? code.substring(0, Config.bytebeatCodeMaxLength) : Config.bytebeatDefaultCode;
+        this.bytebeatMode = clamp(0, BytebeatMode.length, (mode | 0));
+        this.bytebeatTuning = clamp(0, BytebeatTuning.length, (tuning | 0));
+        this.bytebeatSampleRate = clamp(Config.bytebeatSampleRateMin, Config.bytebeatSampleRateMax + 1, Math.round(+sampleRate) || Config.bytebeatSampleRateDefault);
+        this.bytebeatLength = clamp(Config.bytebeatLengthMin, Config.bytebeatLengthMax + 1, Math.round(+length) || Config.bytebeatLengthDefault);
+        this.bytebeatRootKey = clamp(0, Config.bytebeatRootKeyMax + 1, (rootKey == undefined || isNaN(+rootKey)) ? Config.bytebeatRootKeyDefault : Math.round(+rootKey));
     }
 
     public setTypeAndReset(type: InstrumentType, isNoiseChannel: boolean, isModChannel: boolean): void {
@@ -1852,6 +1951,11 @@ export class Instrument {
                 }
 
                 this.customChipWaveIntegral[64] = 0.0;
+                break;
+            case InstrumentType.bytebeat:
+                this.chord = Config.chords.dictionary["simultaneous"].index;
+                this.resetBytebeat();
+                this.resetLoopControls();
                 break;
             case InstrumentType.fm:
                 this.chord = Config.chords.dictionary["custom interval"].index;
@@ -2191,6 +2295,20 @@ export class Instrument {
             }
         } else if (this.type == InstrumentType.chip) {
             instrumentObject["wave"] = Config.chipWaves[this.chipWave].name;
+
+            instrumentObject["isUsingAdvancedLoopControls"] = this.isUsingAdvancedLoopControls;
+            instrumentObject["chipWaveLoopStart"] = this.chipWaveLoopStart;
+            instrumentObject["chipWaveLoopEnd"] = this.chipWaveLoopEnd;
+            instrumentObject["chipWaveLoopMode"] = this.chipWaveLoopMode;
+            instrumentObject["chipWavePlayBackwards"] = this.chipWavePlayBackwards;
+            instrumentObject["chipWaveStartOffset"] = this.chipWaveStartOffset;
+        } else if (this.type == InstrumentType.bytebeat) {
+            instrumentObject["bytebeatCode"] = this.bytebeatCode;
+            instrumentObject["bytebeatMode"] = Config.bytebeatModeNames[this.bytebeatMode];
+            instrumentObject["bytebeatTuning"] = Config.bytebeatTuningNames[this.bytebeatTuning];
+            instrumentObject["bytebeatSampleRate"] = this.bytebeatSampleRate;
+            instrumentObject["bytebeatLength"] = this.bytebeatLength;
+            instrumentObject["bytebeatRootKey"] = this.bytebeatRootKey;
 
             instrumentObject["isUsingAdvancedLoopControls"] = this.isUsingAdvancedLoopControls;
             instrumentObject["chipWaveLoopStart"] = this.chipWaveLoopStart;
@@ -3030,7 +3148,20 @@ export class Instrument {
                 }
             }
         }
-        if (type === 0) {
+        if (type === InstrumentType.bytebeat) {
+            // The names are matched loosely, and anything missing or unrecognized falls back to its default.
+            const modeIndex: number = Config.bytebeatModeNames.indexOf(String(instrumentObject["bytebeatMode"]).toLowerCase());
+            const tuningIndex: number = Config.bytebeatTuningNames.indexOf(String(instrumentObject["bytebeatTuning"]).toLowerCase());
+            this.setBytebeat(
+                instrumentObject["bytebeatCode"],
+                Math.max(0, modeIndex),
+                Math.max(0, tuningIndex),
+                instrumentObject["bytebeatSampleRate"],
+                instrumentObject["bytebeatLength"],
+                instrumentObject["bytebeatRootKey"],
+            );
+        }
+        if (type === InstrumentType.chip || type === InstrumentType.bytebeat) {
             if (instrumentObject["isUsingAdvancedLoopControls"] != undefined) {
                 this.isUsingAdvancedLoopControls = instrumentObject["isUsingAdvancedLoopControls"];
                 this.chipWaveLoopStart = instrumentObject["chipWaveLoopStart"];
@@ -3041,7 +3172,7 @@ export class Instrument {
             } else {
                 this.isUsingAdvancedLoopControls = false;
                 this.chipWaveLoopStart = 0;
-                this.chipWaveLoopEnd = Config.rawRawChipWaves[this.chipWave].samples.length - 1;
+                this.chipWaveLoopEnd = this.getLoopableWaveLength() - 1;
                 this.chipWaveLoopMode = 0;
                 this.chipWavePlayBackwards = false;
                 this.chipWaveStartOffset = 0;
@@ -3842,29 +3973,22 @@ export class Song {
                         buffer.push(base64IntToCharCode[0]);
                     }
 
-                    // Repurposed for chip wave loop controls.
-                    buffer.push(SongTagCode.loopControls);
-                    // The encoding here is as follows:
-                    // 0b11111_1
-                    //         ^-- isUsingAdvancedLoopControls
-                    //   ^^^^^---- chipWaveLoopMode
-                    // This essentially allocates 32 different loop modes,
-                    // which should be plenty.
-                    const encodedLoopMode: number = (
-                        (clamp(0, 31 + 1, instrument.chipWaveLoopMode) << 1)
-                        | (instrument.isUsingAdvancedLoopControls ? 1 : 0)
-                    );
-                    buffer.push(base64IntToCharCode[encodedLoopMode]);
-                    // The same encoding above is used here, but with the release mode
-                    // (which isn't implemented currently), and the backwards toggle.
-                    const encodedReleaseMode: number = (
-                        (clamp(0, 31 + 1, 0) << 1)
-                        | (instrument.chipWavePlayBackwards ? 1 : 0)
-                    );
-                    buffer.push(base64IntToCharCode[encodedReleaseMode]);
-                    encode32BitNumber(buffer, instrument.chipWaveLoopStart);
-                    encode32BitNumber(buffer, instrument.chipWaveLoopEnd);
-                    encode32BitNumber(buffer, instrument.chipWaveStartOffset);
+                    Song._encodeLoopControls(buffer, instrument);
+
+                } else if (instrument.type == InstrumentType.bytebeat) {
+                    buffer.push(SongTagCode.bytebeat);
+                    // The first character holds the mode in its low two bits, and the tuning in the next bit.
+                    buffer.push(base64IntToCharCode[(instrument.bytebeatMode & 0x3) | ((instrument.bytebeatTuning & 0x1) << 2)]);
+                    buffer.push(base64IntToCharCode[(instrument.bytebeatRootKey >> 6) & 0x3f], base64IntToCharCode[instrument.bytebeatRootKey & 0x3f]);
+                    buffer.push(base64IntToCharCode[(instrument.bytebeatSampleRate >> 12) & 0x3f], base64IntToCharCode[(instrument.bytebeatSampleRate >> 6) & 0x3f], base64IntToCharCode[instrument.bytebeatSampleRate & 0x3f]);
+                    buffer.push(base64IntToCharCode[(instrument.bytebeatLength >> 18) & 0x3f], base64IntToCharCode[(instrument.bytebeatLength >> 12) & 0x3f], base64IntToCharCode[(instrument.bytebeatLength >> 6) & 0x3f], base64IntToCharCode[instrument.bytebeatLength & 0x3f]);
+                    // The formula can contain "|", which separates custom sample URLs from the rest of the song,
+                    // along with plenty of other symbols that aren't welcome in URLs. So, it is stored as base64.
+                    const codeBytes: Uint8Array = new TextEncoder().encode(instrument.bytebeatCode);
+                    buffer.push(base64IntToCharCode[(codeBytes.length >> 12) & 0x3f], base64IntToCharCode[(codeBytes.length >> 6) & 0x3f], base64IntToCharCode[codeBytes.length & 0x3f]);
+                    encodeBase64Bytes(buffer, codeBytes);
+
+                    Song._encodeLoopControls(buffer, instrument);
 
                 } else if (instrument.type == InstrumentType.fm || instrument.type == InstrumentType.fm6op) {
                     if (instrument.type == InstrumentType.fm) {
@@ -4271,6 +4395,32 @@ export class Song {
             return result + customSamplesStr;
             //samplemark
         }
+    }
+
+    private static _encodeLoopControls(buffer: number[], instrument: Instrument): void {
+        // Repurposed for chip wave loop controls.
+        buffer.push(SongTagCode.loopControls);
+        // The encoding here is as follows:
+        // 0b11111_1
+        //         ^-- isUsingAdvancedLoopControls
+        //   ^^^^^---- chipWaveLoopMode
+        // This essentially allocates 32 different loop modes,
+        // which should be plenty.
+        const encodedLoopMode: number = (
+            (clamp(0, 31 + 1, instrument.chipWaveLoopMode) << 1)
+            | (instrument.isUsingAdvancedLoopControls ? 1 : 0)
+        );
+        buffer.push(base64IntToCharCode[encodedLoopMode]);
+        // The same encoding above is used here, but with the release mode
+        // (which isn't implemented currently), and the backwards toggle.
+        const encodedReleaseMode: number = (
+            (clamp(0, 31 + 1, 0) << 1)
+            | (instrument.chipWavePlayBackwards ? 1 : 0)
+        );
+        buffer.push(base64IntToCharCode[encodedReleaseMode]);
+        encode32BitNumber(buffer, instrument.chipWaveLoopStart);
+        encode32BitNumber(buffer, instrument.chipWaveLoopEnd);
+        encode32BitNumber(buffer, instrument.chipWaveStartOffset);
     }
 
     private static _envelopeFromLegacyIndex(legacyIndex: number): Envelope {
@@ -5653,6 +5803,18 @@ export class Song {
                 // 65th, last sample is for anti-aliasing
                 instrument.customChipWaveIntegral[64] = 0.0;
 
+            } break;
+            case SongTagCode.bytebeat: {
+                const instrument: Instrument = this.channels[instrumentChannelIterator].instruments[instrumentIndexIterator];
+                // See Song.toBase64String for the layout of this data.
+                const modeAndTuning: number = base64CharCodeToInt[compressed.charCodeAt(charIndex++)];
+                const rootKey: number = (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 6) | base64CharCodeToInt[compressed.charCodeAt(charIndex++)];
+                const sampleRate: number = (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 12) | (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 6) | base64CharCodeToInt[compressed.charCodeAt(charIndex++)];
+                const length: number = (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 18) | (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 12) | (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 6) | base64CharCodeToInt[compressed.charCodeAt(charIndex++)];
+                const codeByteCount: number = (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 12) | (base64CharCodeToInt[compressed.charCodeAt(charIndex++)] << 6) | base64CharCodeToInt[compressed.charCodeAt(charIndex++)];
+                const code: string = new TextDecoder().decode(decodeBase64Bytes(compressed, charIndex, codeByteCount));
+                charIndex += base64LengthOfBytes(codeByteCount);
+                instrument.setBytebeat(code, modeAndTuning & 0x3, (modeAndTuning >> 2) & 0x1, sampleRate, length, rootKey);
             } break;
             case SongTagCode.limiterSettings: {
                 let nextValue: number = base64CharCodeToInt[compressed.charCodeAt(charIndex++)];
@@ -9432,6 +9594,16 @@ class InstrumentState {
             this.chipWaveLoopMode = instrument.chipWaveLoopMode;
             this.chipWavePlayBackwards = instrument.chipWavePlayBackwards;
             this.chipWaveStartOffset = instrument.chipWaveStartOffset;
+        } else if (instrument.type == InstrumentType.bytebeat) {
+            const render: BytebeatRender = instrument.getBytebeatRender();
+            // The integral is a Float64Array, to keep long samples precise. The synth functions only ever read from the wave.
+            this.wave = (this.aliases) ? render.wave : <Float32Array><unknown>render.integral;
+            this.isUsingAdvancedLoopControls = instrument.isUsingAdvancedLoopControls;
+            this.chipWaveLoopStart = instrument.chipWaveLoopStart;
+            this.chipWaveLoopEnd = instrument.chipWaveLoopEnd;
+            this.chipWaveLoopMode = instrument.chipWaveLoopMode;
+            this.chipWavePlayBackwards = instrument.chipWavePlayBackwards;
+            this.chipWaveStartOffset = instrument.chipWaveStartOffset;
         } else if (instrument.type == InstrumentType.customChipWave) {
             this.wave = (this.aliases) ? instrument.customChipWave! : instrument.customChipWaveIntegral!;
             this.volumeScale = 0.05;
@@ -11972,6 +12144,21 @@ export class Synth {
             }
         } else if (instrument.type == InstrumentType.customChipWave) {
             baseExpression = Config.chipBaseExpression;
+        } else if (instrument.type == InstrumentType.bytebeat) {
+            baseExpression = Config.bytebeatBaseExpression;
+            if (instrument.bytebeatTuning == BytebeatTuning.sample) {
+                // Like custom samples, the sample plays at its own sample rate when the root key is played (in
+                // the key of C), and is transposed along with the key of the song. The chip synth plays one
+                // pass through the whole wave per period of the note, so first find the pitch whose period is
+                // as long as the sample: 69 - 12 * log2(440) is the pitch of a 1 Hz tone.
+                const samplePitch: number = (69 - 12 * Math.log2(440)) - 12 * Math.log2(instrument.bytebeatLength / instrument.bytebeatSampleRate);
+                const pitchOffset: number = samplePitch - instrument.bytebeatRootKey;
+                basePitch += pitchOffset;
+                // Notes get quieter as their pitch goes up. Moving the reference along with the pitch
+                // keeps the volume from depending on how long the sample happens to be.
+                expressionReferencePitch += pitchOffset;
+            }
+            // Otherwise the whole sample is one cycle of a wave, exactly like a regular chip wave.
         } else if (instrument.type == InstrumentType.harmonics) {
             baseExpression = Config.harmonicsBaseExpression;
         } else if (instrument.type == InstrumentType.pwm) {
@@ -11992,8 +12179,8 @@ export class Synth {
         if ((tone.atNoteStart && !transition.isSeamless && !tone.forceContinueAtStart) || tone.freshlyAllocated) {
             tone.reset();
             instrumentState.envelopeComputer.reset();
-            if (instrument.type == InstrumentType.chip && instrument.isUsingAdvancedLoopControls) {
-                const chipWaveLength = Config.rawRawChipWaves[instrument.chipWave].samples.length - 1;
+            if ((instrument.type == InstrumentType.chip || instrument.type == InstrumentType.bytebeat) && instrument.isUsingAdvancedLoopControls) {
+                const chipWaveLength = instrument.getLoopableWaveLength() - 1;
                 const firstOffset = instrument.chipWaveStartOffset / chipWaveLength;
                 // const lastOffset = (chipWaveLength - 0.01) / chipWaveLength;
                 // @TODO: This is silly and I should actually figure out how to
@@ -12625,7 +12812,7 @@ export class Synth {
             }
 
             const startFreq: number = Instrument.frequencyFromPitch(startPitch);
-            if (instrument.type == InstrumentType.chip || instrument.type == InstrumentType.customChipWave || instrument.type == InstrumentType.harmonics || instrument.type == InstrumentType.pickedString || instrument.type == InstrumentType.spectrum || instrument.type == InstrumentType.pwm || instrument.type == InstrumentType.noise || instrument.type == InstrumentType.drumset) {
+            if (instrument.type == InstrumentType.chip || instrument.type == InstrumentType.customChipWave || instrument.type == InstrumentType.bytebeat || instrument.type == InstrumentType.harmonics || instrument.type == InstrumentType.pickedString || instrument.type == InstrumentType.spectrum || instrument.type == InstrumentType.pwm || instrument.type == InstrumentType.noise || instrument.type == InstrumentType.drumset) {
                 const unisonVoices: number = instrument.unisonVoices;
                 const unisonSpread: number = instrument.unisonSpread;
                 const unisonOffset: number = instrument.unisonOffset;
@@ -13006,6 +13193,12 @@ export class Synth {
             }
             return Synth.chipSynth;
         } else if (instrument.type == InstrumentType.customChipWave) {
+            return Synth.chipSynth;
+        } else if (instrument.type == InstrumentType.bytebeat) {
+            // Bytebeat samples are played by the same code as chip waves.
+            if (instrument.isUsingAdvancedLoopControls) {
+                return Synth.loopableChipSynth;
+            }
             return Synth.chipSynth;
         } else if (instrument.type == InstrumentType.harmonics) {
             return Synth.harmonicsSynth;

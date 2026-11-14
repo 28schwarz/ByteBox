@@ -88,6 +88,37 @@ npm run build-player
 The [website/](website) folder contains index.html files to view the interfaces.
 The build process outputs JavaScript files into this folder.
 
+## Bytebeat instruments
+
+The `chip (bytebeat)` instrument type branches off of the chip instrument. Instead
+of picking a wave, you write a bytebeat formula, such as `t*(42&t>>10)`. The formula is compiled and calculated once for
+every value of the counter `t`, and the results become a sample that is played
+back by the same code that plays chip waves, including the loop controls.
+
+- **Mode** decides how results become sound: `bytebeat` keeps the low 8 bits
+  (0 to 255), `signed bytebeat` treats those 8 bits as -128 to 127, and
+  `floatbeat` uses results between -1 and 1 directly.
+- **Length** is the number of values of `t` to calculate, up to 1048576.
+- **Tuning** is either `sample`, where the sample plays at its sample rate on the
+  root key (like a custom sample), or `single cycle`, where the whole sample is
+  one cycle of a wave (like a regular chip wave).
+
+Formulas can use numbers, `t`, arithmetic, bitwise, comparison and logic
+operators, `? :`, parentheses, commas, lists (`[1,2,4][t>>12&3]`), text to pick
+digits or character codes out of (`"1234"[t>>12&3]`, `"abc".charCodeAt(t&1)`),
+variables that keep their value from one `t` to the next (`a=t>>4, a*t`), and
+these functions and constants, with or without `Math.` in front: `sin cos tan
+asin acos atan atan2 sinh cosh tanh asinh acosh atanh exp expm1 log log2 log10
+log1p sqrt cbrt pow hypot abs sign floor ceil round trunc min max imul clz32
+fround int random`, `PI E LN2 LN10 LOG2E LOG10E SQRT2 SQRT1_2`.
+
+Since songs are shared as links, a formula is never run as JavaScript directly.
+[synth/Bytebeat.ts](synth/Bytebeat.ts) parses it and generates its own code from
+only the pieces listed above, so a formula can't do anything besides math. Two
+differences from other bytebeat players follow from that: text only acts as a
+list of numbers (there is no joining text together with `+`), and `random()`
+always produces the same sequence so that a song sounds the same every time.
+
 ## Dependencies
 
 Most of the dependencies are listed in [package.json](package.json), although

@@ -8,6 +8,8 @@ import { Change, ChangeGroup } from "./Change";
 import { ChannelSettingsPrompt } from "./ChannelSettingsPrompt";
 import { ColorConfig, ChannelColors } from "./ColorConfig";
 import { CustomChipPrompt } from "./CustomChipPrompt";
+import { BytebeatPrompt, drawBytebeatWaveform } from "./BytebeatPrompt";
+import { BytebeatRender } from "../synth/Bytebeat";
 import { CustomFilterPrompt } from "./CustomFilterPrompt";
 import { InstrumentExportPrompt } from "./InstrumentExportPrompt";
 import { InstrumentImportPrompt } from "./InstrumentImportPrompt";
@@ -90,6 +92,7 @@ function buildPresetOptions(isNoise: boolean, idSet: string): HTMLSelectElement 
     } else {
         menu.appendChild(option({ value: InstrumentType.chip }, EditorConfig.valueToPreset(InstrumentType.chip)!.name));
         menu.appendChild(option({ value: InstrumentType.customChipWave }, EditorConfig.valueToPreset(InstrumentType.customChipWave)!.name));
+        menu.appendChild(option({ value: InstrumentType.bytebeat }, EditorConfig.instrumentToPreset(InstrumentType.bytebeat)!.name));
         menu.appendChild(option({ value: InstrumentType.pwm }, EditorConfig.valueToPreset(InstrumentType.pwm)!.name));
         menu.appendChild(option({ value: InstrumentType.supersaw }, EditorConfig.valueToPreset(InstrumentType.supersaw)!.name));
         menu.appendChild(option({ value: InstrumentType.fm }, EditorConfig.valueToPreset(InstrumentType.fm)!.name));
@@ -1185,6 +1188,17 @@ export class SongEditor {
     );
     private readonly _customWaveZoom: HTMLButtonElement = button({ style: "margin-left:0.5em; height:1.5em; max-width: 20px;", onclick: () => this._openPrompt("customChipSettings") }, "+");
 
+    // The formula of a bytebeat instrument is edited in a prompt. The panel shows the formula and the sample that it compiled into.
+    private readonly _bytebeatPreviewCanvas: HTMLCanvasElement = canvas({ width: 128, height: 40, style: `position: static; width: 100%; height: 40px; box-sizing: border-box; border: 2px solid ${ColorConfig.uiWidgetBackground}; cursor: pointer; image-rendering: pixelated;`, title: "Edit the bytebeat formula", onclick: () => this._openPrompt("bytebeatSettings") });
+    private readonly _bytebeatFormulaLabel: HTMLDivElement = div({ style: `font-family: monospace; font-size: 85%; color: ${ColorConfig.secondaryText}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; margin-bottom: 4px;` });
+    private readonly _bytebeatEditButton: HTMLButtonElement = button({ style: "flex-grow: 1; margin-left: 0.4em; height: 1.5em; padding: 0 0.5em;", onclick: () => this._openPrompt("bytebeatSettings") }, "Edit Formula");
+    private readonly _bytebeatRow: HTMLDivElement = div({ style: "margin-top: 4px; margin-bottom: 4px;" },
+        div({ class: "selectRow" }, span({ class: "tip", onclick: () => this._openPrompt("bytebeat") }, "Bytebeat:"), this._bytebeatEditButton),
+        this._bytebeatFormulaLabel,
+        this._bytebeatPreviewCanvas,
+    );
+    private _renderedBytebeat: BytebeatRender | null = null;
+    private _renderedBytebeatColor: string = "";
     private readonly _customWaveDraw: HTMLDivElement = div({ style: "height:80px; margin-top:10px; margin-bottom:5px" }, [
         div({ style: "height:54px; display:flex; justify-content:center;" }, [this._customWaveDrawCanvas.canvas]),
         div({ style: "margin-top:5px; display:flex; justify-content:center;" }, [this._customWavePresetDrop, this._customWaveZoom]),
@@ -1209,6 +1223,7 @@ export class SongEditor {
         this._panDropdownGroup,
         this._chipWaveSelectRow,
         this._chipNoiseSelectRow,
+        this._bytebeatRow,
         this._useChipWaveAdvancedLoopControlsRow,
         this._chipWaveLoopModeSelectRow,
         this._chipWaveLoopStartRow,
@@ -2230,6 +2245,9 @@ export class SongEditor {
                 case "customChipSettings":
                     this.prompt = new CustomChipPrompt(this.doc, this);
                     break;
+                case "bytebeatSettings":
+                    this.prompt = new BytebeatPrompt(this.doc);
+                    break;
                 case "customEQFilterSettings":
                     this.prompt = new CustomFilterPrompt(this.doc, this, false);
                     break;
@@ -2651,8 +2669,9 @@ export class SongEditor {
                 this._fadeInOutEditor.render();
             }
 
-            if (instrument.type == InstrumentType.chip) {
-                this._chipWaveSelectRow.style.display = "";
+            if (instrument.type == InstrumentType.chip || instrument.type == InstrumentType.bytebeat) {
+                // Bytebeat instruments have a formula instead of a wave to select, but share the loop controls.
+                this._chipWaveSelectRow.style.display = (instrument.type == InstrumentType.chip) ? "" : "none";
                 this._useChipWaveAdvancedLoopControlsRow.style.display = "";
                 if (instrument.isUsingAdvancedLoopControls) {
                     this._chipWaveLoopModeSelectRow.style.display = "";
@@ -2667,7 +2686,7 @@ export class SongEditor {
                     this._chipWaveStartOffsetRow.style.display = "none";
                     this._chipWavePlayBackwardsRow.style.display = "none";
                 }
-                setSelectedValue(this._chipWaveSelect, instrument.chipWave);
+                if (instrument.type == InstrumentType.chip) setSelectedValue(this._chipWaveSelect, instrument.chipWave);
                 this._useChipWaveAdvancedLoopControlsBox.checked = instrument.isUsingAdvancedLoopControls ? true : false;
                 setSelectedValue(this._chipWaveLoopModeSelect, instrument.chipWaveLoopMode);
                 this._chipWaveLoopStartStepper.value = instrument.chipWaveLoopStart + "";
@@ -2677,6 +2696,24 @@ export class SongEditor {
                 this._chipWaveStartOffsetStepper.value = instrument.chipWaveStartOffset + "";
                 // this._chipWaveStartOffsetStepper.max = (chipWaveLength - 1) + "";
                 this._chipWavePlayBackwardsBox.checked = instrument.chipWavePlayBackwards ? true : false;
+            }
+
+            if (instrument.type == InstrumentType.bytebeat) {
+                this._bytebeatRow.style.display = "";
+                // Draw the sample again only if it or the theme changed, since it can be a million values long.
+                const bytebeatRender: BytebeatRender = instrument.getBytebeatRender();
+                const bytebeatColor: string = ColorConfig.getComputedChannelColor(this.doc.song, this.doc.channel).primaryNote;
+                if (this._renderedBytebeat != bytebeatRender || this._renderedBytebeatColor != bytebeatColor) {
+                    this._renderedBytebeat = bytebeatRender;
+                    this._renderedBytebeatColor = bytebeatColor;
+                    drawBytebeatWaveform(this._bytebeatPreviewCanvas, bytebeatRender, bytebeatColor, ColorConfig.getComputed("--editor-background"));
+                }
+                // Shown on a single line. The whole formula is in the tooltip, and both are set as plain text.
+                const bytebeatSummary: string = (bytebeatRender.error != null ? "⚠ " : "") + instrument.bytebeatCode.replace(/\s+/g, " ");
+                if (this._bytebeatFormulaLabel.textContent != bytebeatSummary) this._bytebeatFormulaLabel.textContent = bytebeatSummary;
+                this._bytebeatFormulaLabel.title = bytebeatRender.error != null ? bytebeatRender.error.message : instrument.bytebeatCode;
+            } else {
+                this._bytebeatRow.style.display = "none";
             }
 
             if (instrument.type == InstrumentType.customChipWave) {
@@ -2898,7 +2935,7 @@ export class SongEditor {
 
             if (effectsIncludeDistortion(instrument.effects)) {
                 this._distortionRow.style.display = "";
-                if (instrument.type == InstrumentType.chip || instrument.type == InstrumentType.customChipWave || instrument.type == InstrumentType.pwm || instrument.type == InstrumentType.supersaw)
+                if (instrument.type == InstrumentType.chip || instrument.type == InstrumentType.customChipWave || instrument.type == InstrumentType.bytebeat || instrument.type == InstrumentType.pwm || instrument.type == InstrumentType.supersaw)
                     this._aliasingRow.style.display = "";
                 else
                     this._aliasingRow.style.display = "none";
@@ -3095,6 +3132,7 @@ export class SongEditor {
             //this._filterEnvelopeRow.style.display = "none";
             this._drumsetGroup.style.display = "none";
             this._customWaveDraw.style.display = "none";
+            this._bytebeatRow.style.display = "none";
             this._supersawDynamismRow.style.display = "none";
             this._supersawSpreadRow.style.display = "none";
             this._supersawShapeRow.style.display = "none";
@@ -5310,8 +5348,7 @@ export class SongEditor {
     private _whenSetChipWaveLoopEndToEnd = (): void => {
         const channel = this.doc.song.channels[this.doc.channel];
         const instrument = channel.instruments[this.doc.getCurrentInstrument()];
-        const chipWave = Config.rawRawChipWaves[instrument.chipWave];
-        const chipWaveLength = chipWave.samples.length;
+        const chipWaveLength = instrument.getLoopableWaveLength();
         this.doc.record(new ChangeChipWaveLoopEnd(this.doc, chipWaveLength - 1));
     }
     private _whenSetChipWaveStartOffset = (): void => {

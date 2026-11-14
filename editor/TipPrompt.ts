@@ -460,6 +460,15 @@ export class TipPrompt implements Prompt {
 					p("Sometimes, seamless and other transition types can make audible 'clicks' when changing between notes. Ticking this option will cause those clicks to be silenced as much as possible."),
 				);
 			} break;
+			case "bytebeat": {
+				message = div(
+					h2("Bytebeat"),
+					p("A bytebeat is a tiny formula that makes sound all by itself. The formula is calculated over and over for a counter called \"t\" that goes up by one each time, and every result becomes the next value of a sound wave. Try \"t*(42&t>>10)\"!"),
+					p("This instrument compiles your formula into a sample, and then plays it the way a chip instrument plays its wave. Click \"Edit Formula\" to write a formula, preview it, and choose how long the sample is and how it is tuned. A few examples are included to get you started."),
+					p("Formulas can use numbers, \"t\", the usual math and bitwise symbols (like + - * / % & | ^ ~ << >>), comparisons, \"? :\" choices, lists like [1,2,3][t>>12&3], text like \"1234\"[t>>12&3], your own variables like a=t>>4, and math functions such as sin, cos, abs, floor, pow, min, max and random."),
+					p("The loop controls below work the same as they do for chip instruments. For example, set the loop mode to \"Play Once\" for drum hits. The aliasing setting of the distortion effect makes the sample sound crunchier, like the original."),
+				);
+			} break;
 			case "aliases": {
 				message = div(
 					h2("Aliasing"),
